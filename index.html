@@ -1,0 +1,347 @@
+<html>
+<head>
+<style>
+  body { font-family: sans-serif; }
+  #main { display: flex; gap: 20px; }
+  #hex-dump {
+    flex: 0 0 auto;
+    width: 58ch;
+    font-family: monospace;
+    white-space: pre;
+    border: 1px solid #ccc;
+    padding: 10px;
+    height: 80vh;
+    overflow-y: auto;
+    background: #f9f9f9;
+  }
+  .hl-base { background: #c8e6c9; }
+  .hl-field { background: #ffeb3b; font-weight: bold; }
+  #results {
+    flex: 1;
+    min-width: 0;
+    height: 80vh;
+    overflow-y: auto;
+    border: 1px solid #ccc;
+    padding: 10px;
+  }
+  h2:first-child { margin-top: 0; }
+  table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
+  th, td { border: 1px solid #ccc; padding: 4px; text-align: left; }
+  tr.clickable { cursor: pointer; }
+  tr.clickable:hover { background: #eee; }
+  td:first-child { font-weight: bold; width: 40%; }
+  td:last-child { font-family: monospace; }
+</style>
+<script>
+let profileBuffer = null;
+
+let leafTypes = {
+  'uint8': {
+    size: 1,
+    read: (view, offset) => view.getUint8(offset)
+  },
+  'uint32': {
+    size: 4,
+    read: (view, offset) => view.getUint32(offset, false)
+  },
+  'bitfield32': {
+    size: 4,
+    read: (view, offset) => {
+      const val = view.getUint32(offset, false);
+      return '0x' + val.toString(16).padStart(8, '0');
+    }
+  },
+  'bitfield64': {
+    size: 8,
+    read: (view, offset) => {
+      const hi = view.getUint32(offset, false).toString(16).padStart(8, '0');
+      const lo = view.getUint32(offset+4, false).toString(16).padStart(8, '0');
+      return '0x' + hi + lo;
+    }
+  },
+  'fourcc': {
+    size: 4,
+    read: (view, offset) => {
+      let s = '';
+      for (let i = 0; i < 4; ++i) {
+        let c = view.getUint8(offset + i);
+        s += c >= 32 && c <= 126 ?
+          String.fromCharCode(c) :
+          '\\x' + c.toString(16).padStart(2, '0');
+      }
+      return s;
+    }
+  },
+  'dateTimeNumber': {
+    size: 12,
+    read: (view, offset) => {
+      const year = view.getUint16(offset, false);
+      const month = view.getUint16(offset + 2, false);
+      const day = view.getUint16(offset + 4, false);
+      const hours = view.getUint16(offset + 6, false);
+      const minutes = view.getUint16(offset + 8, false);
+      const seconds = view.getUint16(offset + 10, false);
+      return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+    }
+  },
+  'XYZNumber': {
+    size: 12,
+    read: (view, offset) => {
+      const x = view.getInt32(offset, false) / 65536.0;
+      const y = view.getInt32(offset + 4, false) / 65536.0;
+      const z = view.getInt32(offset + 8, false) / 65536.0;
+      return `X:${x.toFixed(4)}, Y:${y.toFixed(4)}, Z:${z.toFixed(4)}`;
+    }
+  },
+  'md5': {
+    size: 16,
+    read: (view, offset) => {
+      let s = '';
+      for (let i = 0; i < 16; ++i) {
+        s += view.getUint8(offset + i).toString(16).padStart(2, '0');
+      }
+      return s;
+    }
+  }
+};
+
+let tagLayout = [
+  {name: 'signature', type: 'fourcc'},
+  {name: 'offset', type: 'uint32'},
+  {name: 'size', type: 'uint32'},
+];
+
+let headerLayout = [
+  {name: 'Profile size', type: 'uint32'},
+  {name: 'Preferred CMM type', type: 'fourcc'},
+  {name: 'Profile version number', type: 'uint8', count: 4},
+  {name: 'Profile/Device class', type: 'fourcc'},
+  {name: 'Colour space of data', type: 'fourcc'},
+  {name: 'PCS', type: 'fourcc'},
+  {name: 'Date and time', type: 'dateTimeNumber'},
+  {name: 'Profile file signature', type: 'fourcc'},
+  {name: 'Primary platform', type: 'fourcc'},
+  {name: 'Profile flags', type: 'bitfield32'},
+  {name: 'Device manufacturer', type: 'fourcc'},
+  {name: 'Device model', type: 'fourcc'},
+  {name: 'Device attributes', type: 'bitfield64'},
+  {name: 'Rendering intent', type: 'uint32'},
+  {name: 'PCS illuminant', type: 'XYZNumber'},
+  {name: 'Profile creator', type: 'fourcc'},
+  {name: 'Profile ID', type: 'md5'},
+  {name: 'Reserved', type: 'uint32', count: 7},
+];
+
+function parseLayout(view, offset, layout) {
+  let results = [];
+  for (let entry of layout) {
+    const type = leafTypes[entry.type];
+    const count = entry.count || 1;
+    const size = type.size * count;
+    const startOffset = offset;
+    let values = [];
+    for (let i = 0; i < count; ++i) {
+      values.push(type.read(view, offset));
+      offset += type.size;
+    }
+    results.push({
+      name: entry.name,
+      value: count === 1 ? values[0] : values.join(', '),
+      offset: startOffset,
+      size: size
+    });
+  }
+  return { results, offset };
+}
+
+let typeLayouts = {
+  'XYZ ': [
+    {name: 'Type', type: 'fourcc'},
+    {name: 'Reserved', type: 'uint32'},
+    {name: 'XYZ', type: 'XYZNumber'}
+  ],
+  'text': [
+    {name: 'Type', type: 'fourcc'},
+    {name: 'Reserved', type: 'uint32'},
+    {name: 'ASCII', type: 'uint8', count: 0}
+  ],
+  'cicp': [
+    {name: 'Type', type: 'fourcc'},
+    {name: 'Reserved', type: 'uint32'},
+    {name: 'Color Primaries', type: 'uint8'},
+    {name: 'Transfer Characteristics', type: 'uint8'},
+    {name: 'Matrix Coefficients', type: 'uint8'},
+    {name: 'Video Full Range Flag', type: 'uint8'}
+  ]
+};
+
+function parseTag(buffer, offset, size) {
+  const view = new DataView(buffer);
+  const typeSig = leafTypes['fourcc'].read(view, offset);
+  const layout = typeLayouts[typeSig];
+  if (layout) {
+    const activeLayout = layout.map(entry => {
+      if (entry.count === 0) {
+        const consumed = layout
+          .slice(0, layout.indexOf(entry))
+          .reduce((acc, e) => acc + (leafTypes[e.type].size * (e.count || 1)), 0);
+        return { ...entry, count: (size - consumed) / leafTypes[entry.type].size };
+      }
+      return entry;
+    });
+    return parseLayout(view, offset, activeLayout).results;
+  }
+  return [
+    { name: 'Type', value: typeSig, offset: offset, size: 4 },
+    { name: 'Data', value: `[${size} bytes]`, offset: offset + 4, size: size - 4 }
+  ];
+}
+
+function loadProfile(buffer) {
+  profileBuffer = buffer;
+  displayHex(buffer);
+  const view = new DataView(buffer);
+  
+  let { results: headerResults } = parseLayout(view, 0, headerLayout);
+  
+  const tagCount = view.getUint32(128, false);
+  const tagCountResult = {
+    name: 'Tag count', value: tagCount, offset: 128, size: 4
+  };
+
+  let sections = [
+    { title: 'Header', data: headerResults },
+    { title: 'Tag Table Info', data: [tagCountResult] }
+  ];
+
+  let offset = 132;
+  for (let i = 0; i < tagCount; ++i) {
+    let { results: descResults, offset: nextOffset } = 
+      parseLayout(view, offset, tagLayout);
+    const sig = descResults[0].value;
+    const tagOffset = descResults[1].value;
+    const tagSize = descResults[2].value;
+
+    sections.push({
+      title: `Tag ${i}: ${sig}`,
+      subsections: [
+        { title: 'Descriptor', data: descResults },
+        { 
+          title: 'Data', 
+          data: parseTag(buffer, tagOffset, tagSize),
+          base: { offset: tagOffset, size: tagSize }
+        }
+      ]
+    });
+    offset = nextOffset;
+  }
+  displayResults(sections);
+}
+
+function displayHex(buffer, fieldHl = null, baseHl = null) {
+  const bytes = new Uint8Array(buffer);
+  const getHlClass = (idx) => {
+    if (fieldHl && idx >= fieldHl.offset && idx < fieldHl.offset + fieldHl.size)
+      return 'hl-field';
+    if (baseHl && idx >= baseHl.offset && idx < baseHl.offset + baseHl.size)
+      return 'hl-base';
+    return null;
+  };
+
+  let html = '';
+  for (let i = 0; i < bytes.length; i += 16) {
+    html += i.toString(16).padStart(8, '0') + ': ';
+    for (let j = 0; j < 16 && i + j < bytes.length; j++) {
+      const idx = i + j;
+      const hex = bytes[idx].toString(16).padStart(2, '0');
+      const cls = getHlClass(idx);
+      
+      if (cls) {
+        const id = (fieldHl && idx === fieldHl.offset) ? ` id="hl-target"` : '';
+        html += `<span class="${cls}"${id}>${hex}</span>`;
+      } else {
+        html += hex;
+      }
+
+      if (j < 15 && i + j + 1 < bytes.length) {
+        const c1 = getHlClass(idx);
+        const c2 = getHlClass(idx + 1);
+        if (c1 && c2) {
+          const c = (c1 === 'hl-field' && c2 === 'hl-field') ?
+                    'hl-field' : 'hl-base';
+          html += `<span class="${c}">,</span>`;
+        } else {
+          html += ',';
+        }
+      }
+    }
+    html += '\n';
+  }
+  const container = document.getElementById('hex-dump');
+  container.innerHTML = html;
+  
+  const target = document.getElementById('hl-target');
+  if (target) target.scrollIntoView({block: 'center'});
+}
+
+function displayResults(sections) {
+  const container = document.getElementById('results');
+  container.innerHTML = '';
+  for (let section of sections) {
+    const h2 = document.createElement('h2');
+    h2.textContent = section.title;
+    container.appendChild(h2);
+    
+    const subs = section.subsections || 
+                 [{ title: null, data: section.data, base: section.base }];
+    
+    for (let sub of subs) {
+      if (sub.title) {
+        const h3 = document.createElement('h3');
+        h3.textContent = sub.title;
+        container.appendChild(h3);
+      }
+      const table = document.createElement('table');
+      for (let res of sub.data) {
+        const row = table.insertRow();
+        row.className = 'clickable';
+        row.onclick = () => displayHex(profileBuffer, res, sub.base);
+        row.insertCell().textContent = res.name;
+        row.insertCell().textContent = res.value;
+      }
+      container.appendChild(table);
+    }
+  }
+}
+
+window.onload = () => {
+  const button = document.getElementById('LoadProfile');
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.onchange = (e) => {
+    const file = e.target.files[0];
+    if (file) file.arrayBuffer().then(loadProfile);
+  };
+  button.onclick = () => input.click();
+  button.ondragover = (e) => {
+    e.preventDefault();
+    button.style.background = '#eee';
+  };
+  button.ondragleave = () => button.style.background = '';
+  button.ondrop = (e) => {
+    e.preventDefault();
+    button.style.background = '';
+    const file = e.dataTransfer.files[0];
+    if (file) file.arrayBuffer().then(loadProfile);
+  };
+};
+</script>
+</head>
+<body>
+<p><button id="LoadProfile">Load Profile</button></p>
+<div id="main">
+  <div id="hex-dump">Hex dump will appear here...</div>
+  <div id="results"></div>
+</div>
+</body>
+</html>
