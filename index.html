@@ -27,10 +27,11 @@
   h2:first-child { margin-top: 0; }
   table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
   th, td { border: 1px solid #ccc; padding: 4px; text-align: left; }
+  table table { margin-bottom: 0; }
   tr.clickable { cursor: pointer; }
   tr.clickable:hover { background: #eee; }
-  td:first-child { font-weight: bold; width: 40%; }
-  td:last-child { font-family: monospace; }
+  td:first-child { font-weight: bold; width: 25%; white-space: nowrap; }
+  td:last-child { font-family: monospace; word-break: break-all; }
 </style>
 <script>
 let profileBuffer = null;
@@ -39,6 +40,17 @@ let leafTypes = {
   'uint8': {
     size: 1,
     read: (view, offset) => view.getUint8(offset)
+  },
+  'twocc': {
+    size: 2,
+    read: (view, offset) => {
+      return String.fromCharCode(view.getUint8(offset),
+                                 view.getUint8(offset + 1));
+    }
+  },
+  'uint16': {
+    size: 2,
+    read: (view, offset) => view.getUint16(offset, false)
   },
   'uint32': {
     size: 4,
@@ -105,12 +117,6 @@ let leafTypes = {
   }
 };
 
-let tagLayout = [
-  {name: 'signature', type: 'fourcc'},
-  {name: 'offset', type: 'uint32'},
-  {name: 'size', type: 'uint32'},
-];
-
 let headerLayout = [
   {name: 'Profile size', type: 'uint32'},
   {name: 'Preferred CMM type', type: 'fourcc'},
@@ -130,26 +136,57 @@ let headerLayout = [
   {name: 'Profile creator', type: 'fourcc'},
   {name: 'Profile ID', type: 'md5'},
   {name: 'Reserved', type: 'uint32', count: 7},
+  {name: 'Tag count', type: 'uint32'},
+  {name: 'Tags', typeLayout: 'tagTable', count: 'Tag count'}
 ];
 
 function parseLayout(view, offset, layout) {
+
   let results = [];
   for (let entry of layout) {
-    const type = leafTypes[entry.type];
-    const count = entry.count || 1;
-    const size = type.size * count;
-    const startOffset = offset;
-    let values = [];
-    for (let i = 0; i < count; ++i) {
-      values.push(type.read(view, offset));
-      offset += type.size;
+    let count = 1;
+    if (typeof entry.count === 'string') {
+      const prev = results.find(r => r.name === entry.count);
+      count = prev ? prev.value : 0;
+    } else if (entry.count !== undefined) {
+      count = entry.count;
     }
-    results.push({
-      name: entry.name,
-      value: count === 1 ? values[0] : values.join(', '),
-      offset: startOffset,
-      size: size
-    });
+
+    const startOffset = offset;
+    if (entry.typeLayout) {
+      const subLayout = typeLayouts[entry.typeLayout];
+      let subValues = [];
+      for (let i = 0; i < count; i++) {
+        let { results: subRes, offset: nextOffset } =
+          parseLayout(view, offset, subLayout);
+        subValues.push({
+          name: `${entry.typeLayout}[${i}]`,
+          value: subRes,
+          offset: offset,
+          size: nextOffset - offset
+        });
+        offset = nextOffset;
+      }
+      results.push({
+        name: entry.name,
+        value: subValues,
+        offset: startOffset,
+        size: offset - startOffset
+      });
+    } else {
+      const type = leafTypes[entry.type];
+      let values = [];
+      for (let i = 0; i < count; ++i) {
+        values.push(type.read(view, offset));
+        offset += type.size;
+      }
+      results.push({
+        name: entry.name,
+        value: count === 1 ? values[0] : values.join(', '),
+        offset: startOffset,
+        size: offset - startOffset
+      });
+    }
   }
   return { results, offset };
 }
@@ -172,20 +209,57 @@ let typeLayouts = {
     {name: 'Transfer Characteristics', type: 'uint8'},
     {name: 'Matrix Coefficients', type: 'uint8'},
     {name: 'Video Full Range Flag', type: 'uint8'}
+  ],
+  'mluc': [
+    {name: 'Type', type: 'fourcc'},
+    {name: 'Reserved', type: 'uint32'},
+    {name: 'Number of records', type: 'uint32'},
+    {name: 'Record size', type: 'uint32'},
+    {name: 'Records', typeLayout: 'mlucRecord', count: 'Number of records'},
+  ],
+  'mAB ': [
+    {name: 'Type',                      type: 'fourcc'},
+    {name: 'Reserved',                  type: 'uint32'},
+    {name: 'Number of input channels',  type: 'uint8'},
+    {name: 'Number of output channels', type: 'uint8'},
+    {name: 'Reserved',                  type: 'uint16'},
+    {name: 'Offset to B curves',        type: 'uint32'},
+    {name: 'Offset to matrix',          type: 'uint32'},
+    {name: 'Offset to M curves',        type: 'uint32'},
+    {name: 'Offset to CLUT',            type: 'uint32'},
+    {name: 'Offset to A curves',        type: 'uint32'},
+  ],
+  'mlucRecord': [
+    {name: 'language code', type: 'twocc'},
+    {name: 'country code', type: 'twocc'},
+    {name: 'length', type: 'uint32'},
+    {name: 'offset', type: 'uint32'},
+  ],
+  'tagTable': [
+    {name: 'signature', type: 'fourcc'},
+    {name: 'offset', type: 'uint32'},
+    {name: 'size', type: 'uint32'},
   ]
 };
 
 function parseTag(buffer, offset, size) {
   const view = new DataView(buffer);
   const typeSig = leafTypes['fourcc'].read(view, offset);
+
   const layout = typeLayouts[typeSig];
   if (layout) {
     const activeLayout = layout.map(entry => {
       if (entry.count === 0) {
         const consumed = layout
           .slice(0, layout.indexOf(entry))
-          .reduce((acc, e) => acc + (leafTypes[e.type].size * (e.count || 1)), 0);
-        return { ...entry, count: (size - consumed) / leafTypes[entry.type].size };
+          .reduce((acc, e) => {
+            const typeSize = e.typeLayout ?
+              typeLayouts[e.typeLayout].reduce((s, le) =>
+                s + leafTypes[le.type].size * (le.count || 1), 0) :
+              leafTypes[e.type].size;
+            return acc + (typeSize * (e.count || 1));
+          }, 0);
+        return { ...entry, count: (size - consumed) / (leafTypes[entry.type]?.size || 1) };
       }
       return entry;
     });
@@ -202,40 +276,30 @@ function loadProfile(buffer) {
   displayHex(buffer);
   const view = new DataView(buffer);
   
-  let { results: headerResults } = parseLayout(view, 0, headerLayout);
+  let { results: profileResults } = parseLayout(view, 0, headerLayout);
   
-  const tagCount = view.getUint32(128, false);
-  const tagCountResult = {
-    name: 'Tag count', value: tagCount, offset: 128, size: 4
-  };
-
-  let sections = [
-    { title: 'Header', data: headerResults },
-    { title: 'Tag Table Info', data: [tagCountResult] }
-  ];
-
-  let offset = 132;
-  for (let i = 0; i < tagCount; ++i) {
-    let { results: descResults, offset: nextOffset } = 
-      parseLayout(view, offset, tagLayout);
-    const sig = descResults[0].value;
-    const tagOffset = descResults[1].value;
-    const tagSize = descResults[2].value;
-
-    sections.push({
-      title: `Tag ${i}: ${sig}`,
-      subsections: [
-        { title: 'Descriptor', data: descResults },
-        { 
-          title: 'Data', 
-          data: parseTag(buffer, tagOffset, tagSize),
-          base: { offset: tagOffset, size: tagSize }
+  // Find the Tags array to parse the actual data
+  const tagsEntry = profileResults.find(r => r.name === 'Tags');
+  if (tagsEntry && tagsEntry.value) {
+     // Format the nested tag objects to include the parsed Data
+     tagsEntry.value.forEach(tagDesc => {
+        const sigRes = tagDesc.value.find(r => r.name.includes('signature'));
+        const offRes = tagDesc.value.find(r => r.name.includes('offset'));
+        const sizeRes = tagDesc.value.find(r => r.name.includes('size'));
+        
+        if (sigRes && offRes && sizeRes) {
+           tagDesc.value.push({
+             name: 'Data',
+             value: parseTag(buffer, offRes.value, sizeRes.value),
+             offset: offRes.value,
+             size: sizeRes.value,
+             base: { offset: offRes.value, size: sizeRes.value }
+           });
         }
-      ]
-    });
-    offset = nextOffset;
+     });
   }
-  displayResults(sections);
+
+  displayResults([{ title: 'Profile', data: profileResults }]);
 }
 
 function displayHex(buffer, fieldHl = null, baseHl = null) {
@@ -287,30 +351,37 @@ function displayHex(buffer, fieldHl = null, baseHl = null) {
 function displayResults(sections) {
   const container = document.getElementById('results');
   container.innerHTML = '';
+
+  const createTable = (data, parentBase = null) => {
+    const table = document.createElement('table');
+    for (let res of data) {
+      const row = table.insertRow();
+      row.className = 'clickable';
+      const currentBase = res.base || parentBase;
+      
+      row.onclick = (e) => {
+        e.stopPropagation();
+        displayHex(profileBuffer, res, currentBase);
+      };
+
+      row.insertCell().textContent = res.name;
+      const valCell = row.insertCell();
+      
+      if (Array.isArray(res.value)) {
+        valCell.appendChild(createTable(res.value, currentBase));
+        valCell.style.padding = '0'; // Remove padding for nested tables
+      } else {
+        valCell.textContent = res.value;
+      }
+    }
+    return table;
+  };
+
   for (let section of sections) {
     const h2 = document.createElement('h2');
     h2.textContent = section.title;
     container.appendChild(h2);
-    
-    const subs = section.subsections || 
-                 [{ title: null, data: section.data, base: section.base }];
-    
-    for (let sub of subs) {
-      if (sub.title) {
-        const h3 = document.createElement('h3');
-        h3.textContent = sub.title;
-        container.appendChild(h3);
-      }
-      const table = document.createElement('table');
-      for (let res of sub.data) {
-        const row = table.insertRow();
-        row.className = 'clickable';
-        row.onclick = () => displayHex(profileBuffer, res, sub.base);
-        row.insertCell().textContent = res.name;
-        row.insertCell().textContent = res.value;
-      }
-      container.appendChild(table);
-    }
+    container.appendChild(createTable(section.data, section.base));
   }
 }
 
