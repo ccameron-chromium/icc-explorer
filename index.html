@@ -141,7 +141,6 @@ let headerLayout = [
 ];
 
 function parseLayout(view, offset, layout) {
-
   let results = [];
   for (let entry of layout) {
     let count = 1;
@@ -152,9 +151,10 @@ function parseLayout(view, offset, layout) {
       count = entry.count;
     }
 
-    const startOffset = offset;
     if (entry.typeLayout) {
+/*
       const subLayout = typeLayouts[entry.typeLayout];
+
       let subValues = [];
       for (let i = 0; i < count; i++) {
         let { results: subRes, offset: nextOffset } =
@@ -173,19 +173,20 @@ function parseLayout(view, offset, layout) {
         offset: startOffset,
         size: offset - startOffset
       });
+*/
     } else {
-      const type = leafTypes[entry.type];
-      let values = [];
       for (let i = 0; i < count; ++i) {
-        values.push(type.read(view, offset));
+        const type = leafTypes[entry.type];
+        const startOffset = offset;
+        let value = type.read(view, offset);
         offset += type.size;
+        results.push({
+          name: entry.count === undefined ? entry.name : `${entry.name}[${i}]`,
+          value: value,
+          offset: startOffset,
+          size: offset - startOffset
+        });
       }
-      results.push({
-        name: entry.name,
-        value: count === 1 ? values[0] : values.join(', '),
-        offset: startOffset,
-        size: offset - startOffset
-      });
     }
   }
   return { results, offset };
