@@ -151,7 +151,6 @@ function parseLayout(view, offset, layout) {
       count = entry.count;
     }
 
-    if (entry.typeLayout) {
 /*
       const subLayout = typeLayouts[entry.typeLayout];
 
@@ -174,14 +173,18 @@ function parseLayout(view, offset, layout) {
         size: offset - startOffset
       });
 */
-    } else {
-      for (let i = 0; i < count; ++i) {
+
+    for (let i = 0; i < count; ++i) {
+      const name = entry.count === undefined ? entry.name : `${entry.name}[${i}]`;
+      if (entry.typeLayout) {
+        // XXX
+      } else {
         const type = leafTypes[entry.type];
         const startOffset = offset;
         let value = type.read(view, offset);
         offset += type.size;
         results.push({
-          name: entry.count === undefined ? entry.name : `${entry.name}[${i}]`,
+          name: name,
           value: value,
           offset: startOffset,
           size: offset - startOffset
