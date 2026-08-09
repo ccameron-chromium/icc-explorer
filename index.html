@@ -38,8 +38,7 @@ let profileBuffer = null;
 
 function readLayoutType(layout) {
   return (view, offset, endOffset) => {
-    const res = parseLayout(view, offset, layout, endOffset);
-    return { value: res.results, size: res.offset - offset };
+    return parseLayout(view, offset, layout, endOffset);
   };
 }
 
@@ -156,7 +155,16 @@ let types = {
       {name: 'country code', type: 'twocc'},
       {name: 'length', type: 'uint32'},
       {name: 'offset', type: 'uint32'},
-    ])
+    ]),
+    postRead: (view, globalOffset, items) => {
+      const length = items[2].value;
+      const offset = items[3].value;
+
+      const value = 
+      // TODO: Read the string with length from offset+globalOffset.
+
+      return [{ name:'Data', value:value, offset:0, size:0 }];
+    }
   },
   'mAB ': {
     read: readLayoutType([
@@ -178,7 +186,13 @@ let types = {
       {name: 'offset', type: 'uint32'},
       {name: 'size', type: 'uint32'},
     ]),
-    postRread: (view, offset, items) => {
+    postRead: (view, globalOffset, items) => {
+      const signature = items[0].value;
+      const offset = items[1].value;
+      const size = items[2].value;
+      const subValues = parseTag(view, offset, size);
+
+      return [{ name:'Data', value:subValues, offset:0, size:0 }];
     }
   }
 };
@@ -207,7 +221,8 @@ let headerLayout = [
   {name: 'Tags', type: 'tagTable', count: 'Tag count'}
 ];
 
-function parseLayout(view, offset, layout, endOffset) {
+function parseLayout(view, startOffset, layout, endOffset) {
+  let offset = startOffset;
   let results = [];
   for (let entry of layout) {
     let count = 1;
@@ -219,7 +234,6 @@ function parseLayout(view, offset, layout, endOffset) {
     }
 
     const typeDef = types[entry.type];
-    const startOffset = offset;
     let parsedItems = [];
     
     const limit = (count === 0 && endOffset !== undefined) ? Infinity : count;
@@ -228,23 +242,31 @@ function parseLayout(view, offset, layout, endOffset) {
       
       const name = (entry.count === undefined) ? 
         entry.name : `${entry.name}[${i}]`;
-      const res = typeDef.read(view, offset, endOffset);
+      const { value: value, size: size } = typeDef.read(view, offset, endOffset);
+
+      if (typeDef.postRead !== undefined) {
+        const subItems = typeDef.postRead(view, startOffset, value);
+        for (let j = 0; j < subItems.length; ++j) {
+          value.push(subItems[j]);
+        }
+      }
+
       results.push({
         name: name,
-        value: res.value,
+        value: value,
         offset: offset,
-        size: res.size
+        size: size
       });
+      offset += size;
 
-      offset += res.size;
-      if (res.size === 0) break;
+
+      if (size === 0) break;
     }
   }
-  return { results, offset };
+  return { value: results, size: offset - startOffset };
 }
 
-function parseTag(buffer, offset, size) {
-  const view = new DataView(buffer);
+function parseTag(view, offset, size) {
   const typeSig = types['fourcc'].read(view, offset).value;
 
   const typeDef = types[typeSig];
@@ -262,24 +284,7 @@ function loadProfile(buffer) {
   displayHex(buffer);
   const view = new DataView(buffer);
   
-  let { results: profileResults } = parseLayout(view, 0, headerLayout);
-  
-  const tagEntries = profileResults.filter(r => r.name.startsWith('Tags['));
-  tagEntries.forEach(tagDesc => {
-     const sigRes = tagDesc.value.find(r => r.name.includes('signature'));
-     const offRes = tagDesc.value.find(r => r.name.includes('offset'));
-     const sizeRes = tagDesc.value.find(r => r.name.includes('size'));
-     
-     if (sigRes && offRes && sizeRes) {
-        tagDesc.value.push({
-          name: 'Data',
-          value: parseTag(buffer, offRes.value, sizeRes.value),
-          offset: offRes.value,
-          size: sizeRes.value,
-          base: { offset: offRes.value, size: sizeRes.value }
-        });
-     }
-  });
+  let { value : profileResults } = parseLayout(view, 0, headerLayout);
 
   displayResults([{ title: 'Profile', data: profileResults }]);
 }
