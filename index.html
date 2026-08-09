@@ -32,6 +32,7 @@
   tr.clickable:hover { background: #eee; }
   td:first-child { font-weight: bold; width: 25%; white-space: nowrap; }
   td:last-child { font-family: monospace; word-break: break-all; }
+</style>
 <script>
 let profileBuffer = null;
 
@@ -218,58 +219,28 @@ function parseLayout(view, offset, layout, endOffset) {
     const typeDef = types[entry.type];
     const startOffset = offset;
     let parsedItems = [];
-    let actualCount = 0;
     
-    if (count === 0 && endOffset !== undefined) {
-      while (offset < endOffset) {
-        const res = typeDef.read(view, offset, endOffset);
-        parsedItems.push({ value: res.value, size: res.size, offset: offset });
-        offset += res.size;
-        if (res.size === 0) break;
-        actualCount++;
-      }
-    } else {
-      for (let i = 0; i < count; ++i) {
-        const res = typeDef.read(view, offset, endOffset);
-        parsedItems.push({ value: res.value, size: res.size, offset: offset });
-        offset += res.size;
-        actualCount++;
-      }
-    }
+    const limit = (count === 0 && endOffset !== undefined) ? Infinity : count;
     
-    if (actualCount === 1) {
-      results.push({
-        name: entry.name,
-        value: parsedItems[0].value,
-        offset: startOffset,
-        size: offset - startOffset
-      });
-    } else if (actualCount > 1) {
-      if (Array.isArray(parsedItems[0].value)) {
-        parsedItems.forEach((item, idx) => {
-          results.push({
-            name: entry.count === undefined ? entry.name : `${entry.name}[${idx}]`,
-            value: item.value,
-            offset: item.offset,
-            size: item.size
-          });
-        });
-      } else {
-        results.push({
-          name: entry.name,
-          value: parsedItems.map(item => item.value).join(', '),
-          offset: startOffset,
-          size: offset - startOffset
-        });
-      }
-    } else {
-      results.push({
-        name: entry.name,
-        value: '',
-        offset: startOffset,
-        size: 0
-      });
+    for (let i = 0; i < limit; ++i) {
+      if (count === 0 && offset >= endOffset) break;
+      
+      const res = typeDef.read(view, offset, endOffset);
+      parsedItems.push({ value: res.value, size: res.size, offset: offset });
+      offset += res.size;
+      if (res.size === 0) break;
     }
+
+    parsedItems.forEach((item, i) => {
+      const name = (entry.count === undefined) ? 
+        entry.name : `${entry.name}[${i}]`;
+      results.push({
+        name: name,
+        value: item.value,
+        offset: item.offset,
+        size: item.size
+      });
+    });
   }
   return { results, offset };
 }
