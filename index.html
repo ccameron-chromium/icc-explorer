@@ -150,6 +150,14 @@ let types = {
       {name: 'Records', type: 'mlucRecord', count: 'Number of records'},
     ])
   },
+  'mlucRecord': {
+    read: readLayoutType([
+      {name: 'language code', type: 'twocc'},
+      {name: 'country code', type: 'twocc'},
+      {name: 'length', type: 'uint32'},
+      {name: 'offset', type: 'uint32'},
+    ])
+  },
   'mAB ': {
     read: readLayoutType([
       {name: 'Type',                      type: 'fourcc'},
@@ -164,20 +172,12 @@ let types = {
       {name: 'Offset to A curves',        type: 'uint32'},
     ])
   },
-  'mlucRecord': {
-    read: readLayoutType([
-      {name: 'language code', type: 'twocc'},
-      {name: 'country code', type: 'twocc'},
-      {name: 'length', type: 'uint32'},
-      {name: 'offset', type: 'uint32'},
-    ])
-  },
   'tagTable': {
     read: readLayoutType([
       {name: 'signature', type: 'fourcc'},
       {name: 'offset', type: 'uint32'},
       {name: 'size', type: 'uint32'},
-    ])
+    ]),
   }
 };
 
@@ -221,26 +221,22 @@ function parseLayout(view, offset, layout, endOffset) {
     let parsedItems = [];
     
     const limit = (count === 0 && endOffset !== undefined) ? Infinity : count;
-    
     for (let i = 0; i < limit; ++i) {
       if (count === 0 && offset >= endOffset) break;
       
+      const name = (entry.count === undefined) ? 
+        entry.name : `${entry.name}[${i}]`;
       const res = typeDef.read(view, offset, endOffset);
-      parsedItems.push({ value: res.value, size: res.size, offset: offset });
+      results.push({
+        name: name,
+        value: res.value,
+        offset: offset,
+        size: res.size
+      });
+
       offset += res.size;
       if (res.size === 0) break;
     }
-
-    parsedItems.forEach((item, i) => {
-      const name = (entry.count === undefined) ? 
-        entry.name : `${entry.name}[${i}]`;
-      results.push({
-        name: name,
-        value: item.value,
-        offset: item.offset,
-        size: item.size
-      });
-    });
   }
   return { results, offset };
 }
