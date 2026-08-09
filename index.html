@@ -32,11 +32,17 @@
   tr.clickable:hover { background: #eee; }
   td:first-child { font-weight: bold; width: 25%; white-space: nowrap; }
   td:last-child { font-family: monospace; word-break: break-all; }
-</style>
 <script>
 let profileBuffer = null;
 
-let leafTypes = {
+function readLayoutType(layout) {
+  return (view, offset, endOffset) => {
+    const res = parseLayout(view, offset, layout, endOffset);
+    return { value: res.results, size: res.offset - offset };
+  };
+}
+
+let types = {
   'uint8': {
     read: (view, offset) => ({ value: view.getUint8(offset), size: 1 })
   },
@@ -52,6 +58,12 @@ let leafTypes = {
   },
   'uint32': {
     read: (view, offset) => ({ value: view.getUint32(offset, false), size: 4 })
+  },
+  's15Fixed16Number': {
+    read: (view, offset) => ({ 
+      value: (view.getInt32(offset, false) / 65536.0).toFixed(4), 
+      size: 4 
+    })
   },
   'bitfield32': {
     read: (view, offset) => ({
@@ -78,36 +90,6 @@ let leafTypes = {
       return { value: s, size: 4 };
     }
   },
-  'dateTimeNumber': {
-    read: (view, offset) => {
-      return {
-        value: [
-          { name: 'year', value: view.getUint16(offset, false), offset: offset, size: 2 },
-          { name: 'month', value: view.getUint16(offset + 2, false), offset: offset + 2, size: 2 },
-          { name: 'day', value: view.getUint16(offset + 4, false), offset: offset + 4, size: 2 },
-          { name: 'hours', value: view.getUint16(offset + 6, false), offset: offset + 6, size: 2 },
-          { name: 'minutes', value: view.getUint16(offset + 8, false), offset: offset + 8, size: 2 },
-          { name: 'seconds', value: view.getUint16(offset + 10, false), offset: offset + 10, size: 2 }
-        ],
-        size: 12
-      };
-    }
-  },
-  'XYZNumber': {
-    read: (view, offset) => {
-      const x = view.getInt32(offset, false) / 65536.0;
-      const y = view.getInt32(offset + 4, false) / 65536.0;
-      const z = view.getInt32(offset + 8, false) / 65536.0;
-      return {
-        value: [
-          { name: 'X', value: x.toFixed(4), offset: offset, size: 4 },
-          { name: 'Y', value: y.toFixed(4), offset: offset + 4, size: 4 },
-          { name: 'Z', value: z.toFixed(4), offset: offset + 8, size: 4 }
-        ],
-        size: 12
-      };
-    }
-  },
   'md5': {
     read: (view, offset) => {
       let s = '';
@@ -116,8 +98,88 @@ let leafTypes = {
       }
       return { value: s, size: 16 };
     }
+  },
+  'dateTimeNumber': {
+    read: readLayoutType([
+      { name: 'year', type: 'uint16' },
+      { name: 'month', type: 'uint16' },
+      { name: 'day', type: 'uint16' },
+      { name: 'hours', type: 'uint16' },
+      { name: 'minutes', type: 'uint16' },
+      { name: 'seconds', type: 'uint16' }
+    ])
+  },
+  'XYZNumber': {
+    read: readLayoutType([
+      { name: 'X', type: 's15Fixed16Number' },
+      { name: 'Y', type: 's15Fixed16Number' },
+      { name: 'Z', type: 's15Fixed16Number' }
+    ])
+  },
+  'XYZ ': {
+    read: readLayoutType([
+      {name: 'Type', type: 'fourcc'},
+      {name: 'Reserved', type: 'uint32'},
+      {name: 'XYZ', type: 'XYZNumber'}
+    ])
+  },
+  'text': {
+    read: readLayoutType([
+      {name: 'Type', type: 'fourcc'},
+      {name: 'Reserved', type: 'uint32'},
+      {name: 'ASCII', type: 'uint8', count: 0}
+    ])
+  },
+  'cicp': {
+    read: readLayoutType([
+      {name: 'Type', type: 'fourcc'},
+      {name: 'Reserved', type: 'uint32'},
+      {name: 'Color Primaries', type: 'uint8'},
+      {name: 'Transfer Characteristics', type: 'uint8'},
+      {name: 'Matrix Coefficients', type: 'uint8'},
+      {name: 'Video Full Range Flag', type: 'uint8'}
+    ])
+  },
+  'mluc': {
+    read: readLayoutType([
+      {name: 'Type', type: 'fourcc'},
+      {name: 'Reserved', type: 'uint32'},
+      {name: 'Number of records', type: 'uint32'},
+      {name: 'Record size', type: 'uint32'},
+      {name: 'Records', type: 'mlucRecord', count: 'Number of records'},
+    ])
+  },
+  'mAB ': {
+    read: readLayoutType([
+      {name: 'Type',                      type: 'fourcc'},
+      {name: 'Reserved',                  type: 'uint32'},
+      {name: 'Number of input channels',  type: 'uint8'},
+      {name: 'Number of output channels', type: 'uint8'},
+      {name: 'Reserved',                  type: 'uint16'},
+      {name: 'Offset to B curves',        type: 'uint32'},
+      {name: 'Offset to matrix',          type: 'uint32'},
+      {name: 'Offset to M curves',        type: 'uint32'},
+      {name: 'Offset to CLUT',            type: 'uint32'},
+      {name: 'Offset to A curves',        type: 'uint32'},
+    ])
+  },
+  'mlucRecord': {
+    read: readLayoutType([
+      {name: 'language code', type: 'twocc'},
+      {name: 'country code', type: 'twocc'},
+      {name: 'length', type: 'uint32'},
+      {name: 'offset', type: 'uint32'},
+    ])
+  },
+  'tagTable': {
+    read: readLayoutType([
+      {name: 'signature', type: 'fourcc'},
+      {name: 'offset', type: 'uint32'},
+      {name: 'size', type: 'uint32'},
+    ])
   }
 };
+
 
 let headerLayout = [
   {name: 'Profile size', type: 'uint32'},
@@ -139,7 +201,7 @@ let headerLayout = [
   {name: 'Profile ID', type: 'md5'},
   {name: 'Reserved', type: 'uint32', count: 7},
   {name: 'Tag count', type: 'uint32'},
-  {name: 'Tags', typeLayout: 'tagTable', count: 'Tag count'}
+  {name: 'Tags', type: 'tagTable', count: 'Tag count'}
 ];
 
 function parseLayout(view, offset, layout, endOffset) {
@@ -153,137 +215,72 @@ function parseLayout(view, offset, layout, endOffset) {
       count = entry.count;
     }
 
-    if (entry.typeLayout) {
-      const subLayout = typeLayouts[entry.typeLayout];
-      if (count === 0 && endOffset !== undefined) {
-        let i = 0;
-        while (offset < endOffset) {
-          let { results: subRes, offset: nextOffset } =
-            parseLayout(view, offset, subLayout, endOffset);
-          if (nextOffset === offset) break;
-          results.push({
-            name: `${entry.name}[${i}]`,
-            value: subRes,
-            offset: offset,
-            size: nextOffset - offset
-          });
-          offset = nextOffset;
-          i++;
-        }
-      } else {
-        for (let i = 0; i < count; i++) {
-          let { results: subRes, offset: nextOffset } =
-            parseLayout(view, offset, subLayout, endOffset);
-          results.push({
-            name: entry.count === undefined ? entry.name : `${entry.name}[${i}]`,
-            value: subRes,
-            offset: offset,
-            size: nextOffset - offset
-          });
-          offset = nextOffset;
-        }
+    const typeDef = types[entry.type];
+    const startOffset = offset;
+    let parsedItems = [];
+    let actualCount = 0;
+    
+    if (count === 0 && endOffset !== undefined) {
+      while (offset < endOffset) {
+        const res = typeDef.read(view, offset, endOffset);
+        parsedItems.push({ value: res.value, size: res.size, offset: offset });
+        offset += res.size;
+        if (res.size === 0) break;
+        actualCount++;
       }
     } else {
-      const type = leafTypes[entry.type];
-      const startOffset = offset;
-      let values = [];
-      let actualCount = 0;
-      
-      if (count === 0 && endOffset !== undefined) {
-        while (offset < endOffset) {
-          const res = type.read(view, offset);
-          values.push(res.value);
-          offset += res.size;
-          if (res.size === 0) break;
-          actualCount++;
-        }
-      } else {
-        for (let i = 0; i < count; ++i) {
-          const res = type.read(view, offset);
-          values.push(res.value);
-          offset += res.size;
-          actualCount++;
-        }
+      for (let i = 0; i < count; ++i) {
+        const res = typeDef.read(view, offset, endOffset);
+        parsedItems.push({ value: res.value, size: res.size, offset: offset });
+        offset += res.size;
+        actualCount++;
       }
-      
-      let finalValue;
-      if (actualCount === 1) {
-        finalValue = values[0];
-      } else if (values.length > 0 && Array.isArray(values[0])) {
-        finalValue = values.map((v, idx) => ({ name: `[${idx}]`, value: v }));
-      } else {
-        finalValue = values.join(', ');
-      }
-      
+    }
+    
+    if (actualCount === 1) {
       results.push({
         name: entry.name,
-        value: finalValue,
+        value: parsedItems[0].value,
         offset: startOffset,
         size: offset - startOffset
+      });
+    } else if (actualCount > 1) {
+      if (Array.isArray(parsedItems[0].value)) {
+        parsedItems.forEach((item, idx) => {
+          results.push({
+            name: entry.count === undefined ? entry.name : `${entry.name}[${idx}]`,
+            value: item.value,
+            offset: item.offset,
+            size: item.size
+          });
+        });
+      } else {
+        results.push({
+          name: entry.name,
+          value: parsedItems.map(item => item.value).join(', '),
+          offset: startOffset,
+          size: offset - startOffset
+        });
+      }
+    } else {
+      results.push({
+        name: entry.name,
+        value: '',
+        offset: startOffset,
+        size: 0
       });
     }
   }
   return { results, offset };
 }
 
-let typeLayouts = {
-  'XYZ ': [
-    {name: 'Type', type: 'fourcc'},
-    {name: 'Reserved', type: 'uint32'},
-    {name: 'XYZ', type: 'XYZNumber'}
-  ],
-  'text': [
-    {name: 'Type', type: 'fourcc'},
-    {name: 'Reserved', type: 'uint32'},
-    {name: 'ASCII', type: 'uint8', count: 0}
-  ],
-  'cicp': [
-    {name: 'Type', type: 'fourcc'},
-    {name: 'Reserved', type: 'uint32'},
-    {name: 'Color Primaries', type: 'uint8'},
-    {name: 'Transfer Characteristics', type: 'uint8'},
-    {name: 'Matrix Coefficients', type: 'uint8'},
-    {name: 'Video Full Range Flag', type: 'uint8'}
-  ],
-  'mluc': [
-    {name: 'Type', type: 'fourcc'},
-    {name: 'Reserved', type: 'uint32'},
-    {name: 'Number of records', type: 'uint32'},
-    {name: 'Record size', type: 'uint32'},
-    {name: 'Records', typeLayout: 'mlucRecord', count: 'Number of records'},
-  ],
-  'mAB ': [
-    {name: 'Type',                      type: 'fourcc'},
-    {name: 'Reserved',                  type: 'uint32'},
-    {name: 'Number of input channels',  type: 'uint8'},
-    {name: 'Number of output channels', type: 'uint8'},
-    {name: 'Reserved',                  type: 'uint16'},
-    {name: 'Offset to B curves',        type: 'uint32'},
-    {name: 'Offset to matrix',          type: 'uint32'},
-    {name: 'Offset to M curves',        type: 'uint32'},
-    {name: 'Offset to CLUT',            type: 'uint32'},
-    {name: 'Offset to A curves',        type: 'uint32'},
-  ],
-  'mlucRecord': [
-    {name: 'language code', type: 'twocc'},
-    {name: 'country code', type: 'twocc'},
-    {name: 'length', type: 'uint32'},
-    {name: 'offset', type: 'uint32'},
-  ],
-  'tagTable': [
-    {name: 'signature', type: 'fourcc'},
-    {name: 'offset', type: 'uint32'},
-    {name: 'size', type: 'uint32'},
-  ]
-};
-
 function parseTag(buffer, offset, size) {
   const view = new DataView(buffer);
-  const typeSig = leafTypes['fourcc'].read(view, offset).value;
+  const typeSig = types['fourcc'].read(view, offset).value;
 
-  const layout = typeLayouts[typeSig];
-  if (layout) {
-    return parseLayout(view, offset, layout, offset + size).results;
+  const typeDef = types[typeSig];
+  if (typeDef && typeDef.read) {
+    return typeDef.read(view, offset, offset + size).value;
   }
   return [
     { name: 'Type', value: typeSig, offset: offset, size: 4 },
