@@ -38,41 +38,35 @@ let profileBuffer = null;
 
 let leafTypes = {
   'uint8': {
-    size: 1,
-    read: (view, offset) => view.getUint8(offset)
+    read: (view, offset) => ({ value: view.getUint8(offset), size: 1 })
   },
   'twocc': {
-    size: 2,
-    read: (view, offset) => {
-      return String.fromCharCode(view.getUint8(offset),
-                                 view.getUint8(offset + 1));
-    }
+    read: (view, offset) => ({
+      value: String.fromCharCode(view.getUint8(offset),
+                                 view.getUint8(offset + 1)),
+      size: 2
+    })
   },
   'uint16': {
-    size: 2,
-    read: (view, offset) => view.getUint16(offset, false)
+    read: (view, offset) => ({ value: view.getUint16(offset, false), size: 2 })
   },
   'uint32': {
-    size: 4,
-    read: (view, offset) => view.getUint32(offset, false)
+    read: (view, offset) => ({ value: view.getUint32(offset, false), size: 4 })
   },
   'bitfield32': {
-    size: 4,
-    read: (view, offset) => {
-      const val = view.getUint32(offset, false);
-      return '0x' + val.toString(16).padStart(8, '0');
-    }
+    read: (view, offset) => ({
+      value: '0x' + view.getUint32(offset, false).toString(16).padStart(8, '0'),
+      size: 4
+    })
   },
   'bitfield64': {
-    size: 8,
-    read: (view, offset) => {
-      const hi = view.getUint32(offset, false).toString(16).padStart(8, '0');
-      const lo = view.getUint32(offset+4, false).toString(16).padStart(8, '0');
-      return '0x' + hi + lo;
-    }
+    read: (view, offset) => ({
+      value: '0x' + view.getUint32(offset, false).toString(16).padStart(8, '0') +
+             view.getUint32(offset+4, false).toString(16).padStart(8, '0'),
+      size: 8
+    })
   },
   'fourcc': {
-    size: 4,
     read: (view, offset) => {
       let s = '';
       for (let i = 0; i < 4; ++i) {
@@ -81,38 +75,46 @@ let leafTypes = {
           String.fromCharCode(c) :
           '\\x' + c.toString(16).padStart(2, '0');
       }
-      return s;
+      return { value: s, size: 4 };
     }
   },
   'dateTimeNumber': {
-    size: 12,
     read: (view, offset) => {
-      const year = view.getUint16(offset, false);
-      const month = view.getUint16(offset + 2, false);
-      const day = view.getUint16(offset + 4, false);
-      const hours = view.getUint16(offset + 6, false);
-      const minutes = view.getUint16(offset + 8, false);
-      const seconds = view.getUint16(offset + 10, false);
-      return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+      return {
+        value: [
+          { name: 'year', value: view.getUint16(offset, false), offset: offset, size: 2 },
+          { name: 'month', value: view.getUint16(offset + 2, false), offset: offset + 2, size: 2 },
+          { name: 'day', value: view.getUint16(offset + 4, false), offset: offset + 4, size: 2 },
+          { name: 'hours', value: view.getUint16(offset + 6, false), offset: offset + 6, size: 2 },
+          { name: 'minutes', value: view.getUint16(offset + 8, false), offset: offset + 8, size: 2 },
+          { name: 'seconds', value: view.getUint16(offset + 10, false), offset: offset + 10, size: 2 }
+        ],
+        size: 12
+      };
     }
   },
   'XYZNumber': {
-    size: 12,
     read: (view, offset) => {
       const x = view.getInt32(offset, false) / 65536.0;
       const y = view.getInt32(offset + 4, false) / 65536.0;
       const z = view.getInt32(offset + 8, false) / 65536.0;
-      return `X:${x.toFixed(4)}, Y:${y.toFixed(4)}, Z:${z.toFixed(4)}`;
+      return {
+        value: [
+          { name: 'X', value: x.toFixed(4), offset: offset, size: 4 },
+          { name: 'Y', value: y.toFixed(4), offset: offset + 4, size: 4 },
+          { name: 'Z', value: z.toFixed(4), offset: offset + 8, size: 4 }
+        ],
+        size: 12
+      };
     }
   },
   'md5': {
-    size: 16,
     read: (view, offset) => {
       let s = '';
       for (let i = 0; i < 16; ++i) {
         s += view.getUint8(offset + i).toString(16).padStart(2, '0');
       }
-      return s;
+      return { value: s, size: 16 };
     }
   }
 };
@@ -140,7 +142,7 @@ let headerLayout = [
   {name: 'Tags', typeLayout: 'tagTable', count: 'Tag count'}
 ];
 
-function parseLayout(view, offset, layout) {
+function parseLayout(view, offset, layout, endOffset) {
   let results = [];
   for (let entry of layout) {
     let count = 1;
@@ -151,45 +153,74 @@ function parseLayout(view, offset, layout) {
       count = entry.count;
     }
 
-/*
+    if (entry.typeLayout) {
       const subLayout = typeLayouts[entry.typeLayout];
-
-      let subValues = [];
-      for (let i = 0; i < count; i++) {
-        let { results: subRes, offset: nextOffset } =
-          parseLayout(view, offset, subLayout);
-        subValues.push({
-          name: `${entry.typeLayout}[${i}]`,
-          value: subRes,
-          offset: offset,
-          size: nextOffset - offset
-        });
-        offset = nextOffset;
+      if (count === 0 && endOffset !== undefined) {
+        let i = 0;
+        while (offset < endOffset) {
+          let { results: subRes, offset: nextOffset } =
+            parseLayout(view, offset, subLayout, endOffset);
+          if (nextOffset === offset) break;
+          results.push({
+            name: `${entry.name}[${i}]`,
+            value: subRes,
+            offset: offset,
+            size: nextOffset - offset
+          });
+          offset = nextOffset;
+          i++;
+        }
+      } else {
+        for (let i = 0; i < count; i++) {
+          let { results: subRes, offset: nextOffset } =
+            parseLayout(view, offset, subLayout, endOffset);
+          results.push({
+            name: entry.count === undefined ? entry.name : `${entry.name}[${i}]`,
+            value: subRes,
+            offset: offset,
+            size: nextOffset - offset
+          });
+          offset = nextOffset;
+        }
       }
+    } else {
+      const type = leafTypes[entry.type];
+      const startOffset = offset;
+      let values = [];
+      let actualCount = 0;
+      
+      if (count === 0 && endOffset !== undefined) {
+        while (offset < endOffset) {
+          const res = type.read(view, offset);
+          values.push(res.value);
+          offset += res.size;
+          if (res.size === 0) break;
+          actualCount++;
+        }
+      } else {
+        for (let i = 0; i < count; ++i) {
+          const res = type.read(view, offset);
+          values.push(res.value);
+          offset += res.size;
+          actualCount++;
+        }
+      }
+      
+      let finalValue;
+      if (actualCount === 1) {
+        finalValue = values[0];
+      } else if (values.length > 0 && Array.isArray(values[0])) {
+        finalValue = values.map((v, idx) => ({ name: `[${idx}]`, value: v }));
+      } else {
+        finalValue = values.join(', ');
+      }
+      
       results.push({
         name: entry.name,
-        value: subValues,
+        value: finalValue,
         offset: startOffset,
         size: offset - startOffset
       });
-*/
-
-    for (let i = 0; i < count; ++i) {
-      const name = entry.count === undefined ? entry.name : `${entry.name}[${i}]`;
-      if (entry.typeLayout) {
-        // XXX
-      } else {
-        const type = leafTypes[entry.type];
-        const startOffset = offset;
-        let value = type.read(view, offset);
-        offset += type.size;
-        results.push({
-          name: name,
-          value: value,
-          offset: startOffset,
-          size: offset - startOffset
-        });
-      }
     }
   }
   return { results, offset };
@@ -248,26 +279,11 @@ let typeLayouts = {
 
 function parseTag(buffer, offset, size) {
   const view = new DataView(buffer);
-  const typeSig = leafTypes['fourcc'].read(view, offset);
+  const typeSig = leafTypes['fourcc'].read(view, offset).value;
 
   const layout = typeLayouts[typeSig];
   if (layout) {
-    const activeLayout = layout.map(entry => {
-      if (entry.count === 0) {
-        const consumed = layout
-          .slice(0, layout.indexOf(entry))
-          .reduce((acc, e) => {
-            const typeSize = e.typeLayout ?
-              typeLayouts[e.typeLayout].reduce((s, le) =>
-                s + leafTypes[le.type].size * (le.count || 1), 0) :
-              leafTypes[e.type].size;
-            return acc + (typeSize * (e.count || 1));
-          }, 0);
-        return { ...entry, count: (size - consumed) / (leafTypes[entry.type]?.size || 1) };
-      }
-      return entry;
-    });
-    return parseLayout(view, offset, activeLayout).results;
+    return parseLayout(view, offset, layout, offset + size).results;
   }
   return [
     { name: 'Type', value: typeSig, offset: offset, size: 4 },
@@ -282,26 +298,22 @@ function loadProfile(buffer) {
   
   let { results: profileResults } = parseLayout(view, 0, headerLayout);
   
-  // Find the Tags array to parse the actual data
-  const tagsEntry = profileResults.find(r => r.name === 'Tags');
-  if (tagsEntry && tagsEntry.value) {
-     // Format the nested tag objects to include the parsed Data
-     tagsEntry.value.forEach(tagDesc => {
-        const sigRes = tagDesc.value.find(r => r.name.includes('signature'));
-        const offRes = tagDesc.value.find(r => r.name.includes('offset'));
-        const sizeRes = tagDesc.value.find(r => r.name.includes('size'));
-        
-        if (sigRes && offRes && sizeRes) {
-           tagDesc.value.push({
-             name: 'Data',
-             value: parseTag(buffer, offRes.value, sizeRes.value),
-             offset: offRes.value,
-             size: sizeRes.value,
-             base: { offset: offRes.value, size: sizeRes.value }
-           });
-        }
-     });
-  }
+  const tagEntries = profileResults.filter(r => r.name.startsWith('Tags['));
+  tagEntries.forEach(tagDesc => {
+     const sigRes = tagDesc.value.find(r => r.name.includes('signature'));
+     const offRes = tagDesc.value.find(r => r.name.includes('offset'));
+     const sizeRes = tagDesc.value.find(r => r.name.includes('size'));
+     
+     if (sigRes && offRes && sizeRes) {
+        tagDesc.value.push({
+          name: 'Data',
+          value: parseTag(buffer, offRes.value, sizeRes.value),
+          offset: offRes.value,
+          size: sizeRes.value,
+          base: { offset: offRes.value, size: sizeRes.value }
+        });
+     }
+  });
 
   displayResults([{ title: 'Profile', data: profileResults }]);
 }
