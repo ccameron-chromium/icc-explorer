@@ -43,6 +43,9 @@ function readLayoutType(layout) {
 }
 
 let types = {
+  ////////////////////////////////////////////////////////////////////////////////
+  // Leaf node types.
+  
   'uint8': {
     read: (view, offset) => ({ value: view.getUint8(offset), size: 1 })
   },
@@ -99,6 +102,10 @@ let types = {
       return { value: s, size: 16 };
     }
   },
+
+  ////////////////////////////////////////////////////////////////////////////////
+  // Internal node types.
+
   'dateTimeNumber': {
     read: readLayoutType([
       { name: 'year', type: 'uint16' },
@@ -160,10 +167,12 @@ let types = {
       const length = items[2].value;
       const offset = items[3].value;
 
-      const value = 
-      // TODO: Read the string with length from offset+globalOffset.
+      let value = '';
+      for (let i = 0; i < length; i += 2) {
+        value += String.fromCharCode(view.getUint16(globalOffset + offset + i, false));
+      }
 
-      return [{ name:'Data', value:value, offset:0, size:0 }];
+      return [{ name: 'Data', value: value, offset: globalOffset + offset, size: length }];
     }
   },
   'mAB ': {
@@ -221,13 +230,15 @@ let headerLayout = [
   {name: 'Tags', type: 'tagTable', count: 'Tag count'}
 ];
 
+// Returns a node in an ICC profile parsed tree. The node corresponds to
+// the layout indicated by `layout`
 function parseLayout(view, startOffset, layout, endOffset) {
   let offset = startOffset;
-  let results = [];
+  let children = [];
   for (let entry of layout) {
     let count = 1;
     if (typeof entry.count === 'string') {
-      const prev = results.find(r => r.name === entry.count);
+      const prev = children.find(r => r.name === entry.count);
       count = prev ? prev.value : 0;
     } else if (entry.count !== undefined) {
       count = entry.count;
@@ -240,30 +251,30 @@ function parseLayout(view, startOffset, layout, endOffset) {
     for (let i = 0; i < limit; ++i) {
       if (count === 0 && offset >= endOffset) break;
       
-      const name = (entry.count === undefined) ? 
+      const childOffset = offset;
+      const childName = (entry.count === undefined) ? 
         entry.name : `${entry.name}[${i}]`;
-      const { value: value, size: size } = typeDef.read(view, offset, endOffset);
+
+      // Read the value and size.
+      const { value: childValue, size: childSize } = typeDef.read(view, offset, endOffset);
+      offset += childSize;
 
       if (typeDef.postRead !== undefined) {
-        const subItems = typeDef.postRead(view, startOffset, value);
-        for (let j = 0; j < subItems.length; ++j) {
-          value.push(subItems[j]);
+        const postReadValues = typeDef.postRead(view, startOffset, childValue);
+        for (let j = 0; j < postReadValues.length; ++j) {
+          childValue.push(postReadValues[j]);
         }
       }
 
-      results.push({
-        name: name,
-        value: value,
-        offset: offset,
-        size: size
+      children.push({
+        name: childName,
+        value: childValue,
+        offset: childOffset,
+        size: childSize
       });
-      offset += size;
-
-
-      if (size === 0) break;
     }
   }
-  return { value: results, size: offset - startOffset };
+  return { value: children, size: offset - startOffset };
 }
 
 function parseTag(view, offset, size) {
