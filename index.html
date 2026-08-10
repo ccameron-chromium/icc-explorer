@@ -36,9 +36,9 @@
 <script>
 let profileBuffer = null;
 
-function readLayoutType(layout) {
-  return (view, offset, endOffset) => {
-    return parseLayout(view, offset, layout, endOffset);
+function readStructureType(structure) {
+  return (view, offset) => {
+    return readStructure(view, structure, offset);
   };
 }
 
@@ -107,7 +107,7 @@ let types = {
   // Internal node types.
 
   'dateTimeNumber': {
-    read: readLayoutType([
+    read: readStructureType([
       { name: 'year', type: 'uint16' },
       { name: 'month', type: 'uint16' },
       { name: 'day', type: 'uint16' },
@@ -117,28 +117,28 @@ let types = {
     ])
   },
   'XYZNumber': {
-    read: readLayoutType([
+    read: readStructureType([
       { name: 'X', type: 's15Fixed16Number' },
       { name: 'Y', type: 's15Fixed16Number' },
       { name: 'Z', type: 's15Fixed16Number' }
     ])
   },
   'XYZ ': {
-    read: readLayoutType([
+    read: readStructureType([
       {name: 'Type', type: 'fourcc'},
       {name: 'Reserved', type: 'uint32'},
       {name: 'XYZ', type: 'XYZNumber'}
     ])
   },
   'text': {
-    read: readLayoutType([
+    read: readStructureType([
       {name: 'Type', type: 'fourcc'},
       {name: 'Reserved', type: 'uint32'},
       {name: 'ASCII', type: 'uint8', count: 0}
     ])
   },
   'cicp': {
-    read: readLayoutType([
+    read: readStructureType([
       {name: 'Type', type: 'fourcc'},
       {name: 'Reserved', type: 'uint32'},
       {name: 'Color Primaries', type: 'uint8'},
@@ -148,35 +148,35 @@ let types = {
     ])
   },
   'mluc': {
-    read: readLayoutType([
+    read: readStructureType([
       {name: 'Type', type: 'fourcc'},
       {name: 'Reserved', type: 'uint32'},
       {name: 'Number of records', type: 'uint32'},
       {name: 'Record size', type: 'uint32'},
-      {name: 'Records', type: 'mlucRecord', count: 'Number of records'},
+      {name: 'Records', type: '(mluc record)', count: 'Number of records'},
     ])
   },
-  'mlucRecord': {
-    read: readLayoutType([
+  '(mluc record)': {
+    read: readStructureType([
       {name: 'language code', type: 'twocc'},
       {name: 'country code', type: 'twocc'},
       {name: 'length', type: 'uint32'},
       {name: 'offset', type: 'uint32'},
     ]),
-    postRead: (view, globalOffset, items) => {
-      const length = items[2].value;
-      const offset = items[3].value;
+    onReadStructure: (view, structure, offset) => {
+      const length = getStructureValue(structure, 'length');
+      const dataOffset = getStructureValue(structure, 'offset');
 
       let value = '';
       for (let i = 0; i < length; i += 2) {
-        value += String.fromCharCode(view.getUint16(globalOffset + offset + i, false));
+        value += String.fromCharCode(view.getUint16(offset + dataOffset + i, false));
       }
 
-      return [{ name: 'Data', value: value, offset: globalOffset + offset, size: length }];
+      return [{ name: 'Value', value: value, offset: offset + dataOffset, size: length }];
     }
   },
   'mAB ': {
-    read: readLayoutType([
+    read: readStructureType([
       {name: 'Type',                      type: 'fourcc'},
       {name: 'Reserved',                  type: 'uint32'},
       {name: 'Number of input channels',  type: 'uint8'},
@@ -190,24 +190,22 @@ let types = {
     ])
   },
   'tagTable': {
-    read: readLayoutType([
+    read: readStructureType([
       {name: 'signature', type: 'fourcc'},
       {name: 'offset', type: 'uint32'},
       {name: 'size', type: 'uint32'},
     ]),
-    postRead: (view, globalOffset, items) => {
-      const signature = items[0].value;
-      const offset = items[1].value;
-      const size = items[2].value;
-      const subValues = parseTag(view, offset, size);
+    onReadStructure: (view, structure, offset) => {
+      const tagOffset = getStructureValue(structure, 'offset');
+      const size = getStructureValue(structure, 'size');
+      const subValues = readTag(view, tagOffset, size);
 
-      return [{ name:'Data', value:subValues, offset:0, size:0 }];
+      return [{ name:'Tag data', value:subValues, offset:0, size:0 }];
     }
   }
 };
 
-
-let headerLayout = [
+let headerStructure = [
   {name: 'Profile size', type: 'uint32'},
   {name: 'Preferred CMM type', type: 'fourcc'},
   {name: 'Profile version number', type: 'uint8', count: 4},
@@ -230,12 +228,17 @@ let headerLayout = [
   {name: 'Tags', type: 'tagTable', count: 'Tag count'}
 ];
 
+function getStructureValue(structure, name) {
+  const item = structure.find(r => r.name === name);
+  return item ? item.value : undefined;
+}
+
 // Returns a node in an ICC profile parsed tree. The node corresponds to
-// the layout indicated by `layout`
-function parseLayout(view, startOffset, layout, endOffset) {
+// the structure indicated by `structure`
+function readStructure(view, structure, startOffset) {
   let offset = startOffset;
   let children = [];
-  for (let entry of layout) {
+  for (let entry of structure) {
     let count = 1;
     if (typeof entry.count === 'string') {
       const prev = children.find(r => r.name === entry.count);
@@ -247,28 +250,28 @@ function parseLayout(view, startOffset, layout, endOffset) {
     const typeDef = types[entry.type];
     let parsedItems = [];
     
-    const limit = (count === 0 && endOffset !== undefined) ? Infinity : count;
+    const limit = (count === 0) ? Infinity : count;
     for (let i = 0; i < limit; ++i) {
-      if (count === 0 && offset >= endOffset) break;
+      if (count === 0 && offset >= view.byteLength) break;
       
       const childOffset = offset;
       const childName = (entry.count === undefined) ? 
         entry.name : `${entry.name}[${i}]`;
 
       // Read the value and size.
-      const { value: childValue, size: childSize } = typeDef.read(view, offset, endOffset);
+      const { value: structure, size: childSize } = typeDef.read(view, offset);
       offset += childSize;
 
-      if (typeDef.postRead !== undefined) {
-        const postReadValues = typeDef.postRead(view, startOffset, childValue);
-        for (let j = 0; j < postReadValues.length; ++j) {
-          childValue.push(postReadValues[j]);
+      if (typeDef.onReadStructure !== undefined) {
+        const subItems = typeDef.onReadStructure(view, structure, startOffset);
+        for (let j = 0; j < subItems.length; ++j) {
+          structure.push(subItems[j]);
         }
       }
 
       children.push({
         name: childName,
-        value: childValue,
+        value: structure,
         offset: childOffset,
         size: childSize
       });
@@ -277,16 +280,17 @@ function parseLayout(view, startOffset, layout, endOffset) {
   return { value: children, size: offset - startOffset };
 }
 
-function parseTag(view, offset, size) {
-  const typeSig = types['fourcc'].read(view, offset).value;
+function readTag(view, offset, size) {
+  const subView = new DataView(view.buffer, view.byteOffset + offset, size);
+  const typeSig = types['fourcc'].read(subView, 0).value;
 
   const typeDef = types[typeSig];
   if (typeDef && typeDef.read) {
-    return typeDef.read(view, offset, offset + size).value;
+    return typeDef.read(subView, 0).value;
   }
   return [
-    { name: 'Type', value: typeSig, offset: offset, size: 4 },
-    { name: 'Data', value: `[${size} bytes]`, offset: offset + 4, size: size - 4 }
+    { name: 'Type', value: typeSig, offset: 0, size: 4 },
+    { name: 'Data', value: `[${size} bytes]`, offset: 4, size: size - 4 }
   ];
 }
 
@@ -295,7 +299,7 @@ function loadProfile(buffer) {
   displayHex(buffer);
   const view = new DataView(buffer);
   
-  let { value : profileResults } = parseLayout(view, 0, headerLayout);
+  let { value : profileResults } = readStructure(view, headerStructure, 0);
 
   displayResults([{ title: 'Profile', data: profileResults }]);
 }
