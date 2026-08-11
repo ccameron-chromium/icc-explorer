@@ -39,14 +39,25 @@ class Reader {
     }
 
     let offsetToRestore = null;
+    let newOffset = null;
     if (typeof entry.offset === 'string') {
       offsetToRestore = this.offset;
-      const newOffset = structure.find(r => r.name === entry.offset).value;
+      newOffset = structure.find(r => r.name === entry.offset).value;
       if (newOffset === 0) {
         return;
       }
       this.offset = newOffset;
     }
+
+    let viewToRestore = null;
+    let newSize = null;
+    if (entry.size !== undefined) {
+      newSize = structure.find(r => r.name === entry.size).value;
+      viewToRestore = this.view;
+      this.view = new DataView(this.view.buffer, this.view.byteOffset + this.offset, newSize)
+      this.offset = 0;
+    }
+
 
     const typeDef = types[entry.type];
     const limit = (count === 0) ? Infinity : count;
@@ -59,7 +70,7 @@ class Reader {
 
       let value = this.readValue(entry.type);
       const childOffsetEnd = this.view.byteOffset + this.offset;
-      const childSize = childOffsetEnd - childOffsetStart;
+      const childSize = newSize === null ? childOffsetEnd - childOffsetStart : newSize;
 
       structure.push({
         name: childName,
@@ -71,6 +82,9 @@ class Reader {
       if (childSize === 0 && limit === Infinity) break;
     }
 
+    if (viewToRestore !== null) {
+      this.view = viewToRestore;
+    }
     if (offsetToRestore !== null) {
       this.offset = offsetToRestore;
     }
@@ -340,20 +354,8 @@ let types = {
         {name: 'signature', type: 'fourcc'},
         {name: 'offset', type: 'uint32'},
         {name: 'size', type: 'uint32'},
+        {name: 'Data', type: '(tag)', offset:'offset', size:'size'},
       ]);
-
-      const tagOffset = getStructMember(structure, 'offset').value;
-      const tagSize = getStructMember(structure, 'size').value;
-
-      const subView = new DataView(reader.view.buffer, reader.view.byteOffset + tagOffset, tagSize);
-      const tagReader = new Reader(subView, 0);
-      const tagSignature = types['fourcc'].read(tagReader);
-      tagReader.offset -= 4;
-      const typeDef = types[tagSignature];
-      if (typeDef && typeDef.read) {
-        tagData = typeDef.read(tagReader);
-        structure.push({ name: 'Tag data', value: tagData, offset: tagOffset, size: tagSize });
-      }
       return structure;
     }
   },
