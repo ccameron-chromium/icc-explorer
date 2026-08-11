@@ -6,8 +6,12 @@
   body { font-family: sans-serif; display: flex; height: 100vh; margin: 0; }
   #hex-dump { flex: 1; overflow-y: scroll; font-family: monospace; white-space: pre; padding: 10px; background: #f0f0f0; }
   #results { flex: 1; overflow-y: scroll; padding: 10px; }
-  .hl-field { background: yellow; }
-  .hl-base { background: #e0e0ff; }
+  .hl-0 { background: yellow; }
+  .hl-1 { background: #e0e0ff; }
+  .hl-2 { background: #e0ffe0; }
+  .hl-3 { background: #ffe0e0; }
+  .hl-4 { background: #f0e0ff; }
+  .hl-5 { background: #fff0e0; }
   table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
   th, td { border: 1px solid #ccc; padding: 4px; text-align: left; }
   table table { margin-bottom: 0; }
@@ -101,6 +105,62 @@ function readStructure(reader, structureLayout) {
   let children = [];
   readStructureInto(reader, children, structureLayout);
   return children;
+}
+
+function readLutType(reader) {
+  const startOffset = reader.offset;
+  let structure = readStructure(reader, [
+    {name: 'Type',                      type: 'fourcc'},
+    {name: 'Reserved',                  type: 'uint32'},
+    {name: 'Number of input channels',  type: 'uint8'},
+    {name: 'Number of output channels', type: 'uint8'},
+    {name: 'Reserved',                  type: 'uint16'},
+    {name: 'Offset to B curves',        type: 'uint32'},
+    {name: 'Offset to matrix',          type: 'uint32'},
+    {name: 'Offset to M curves',        type: 'uint32'},
+    {name: 'Offset to CLUT',            type: 'uint32'},
+    {name: 'Offset to A curves',        type: 'uint32'},
+  ]);
+
+  const inputChannels = getStructMember(structure, 'Number of input channels').value;
+  const outputChannels = getStructMember(structure, 'Number of output channels').value;
+
+  reader.readStructMember({name: 'B curve', type:'(tag)',    offset:'Offset to B curves', count:inputChannels}, structure);
+  reader.readStructMember({name: 'Matrix',  type:'(matrix)', offset:'Offset to matrix'}, structure);
+  reader.readStructMember({name: 'M curve', type:'(tag)',    offset:'Offset to M curves', count:3}, structure);
+
+  const clutOffset = getStructMember(structure, 'Offset to CLUT').value;
+  if (clutOffset !== 0) {
+    const oldOffset = reader.offset;
+    reader.offset = clutOffset;
+    const clutStructure = readStructure(reader, [
+      {name: 'Grid points', type: 'uint8', count: 16},
+      {name: 'Precision',   type: 'uint8'},
+      {name: 'Reserved',    type: 'uint8', count: 3},
+    ]);
+    const precision = getStructMember(clutStructure, 'Precision').value;
+    let tableSize = (precision === 1 ? 1 : 2) * outputChannels;
+    for (let i = 0; i < inputChannels; ++i) {
+      tableSize *= getStructMember(clutStructure, `Grid points[${i}]`).value;
+    }
+    clutStructure.push({
+      name: 'Data',
+      value: '[table]',
+      offset: reader.view.byteOffset + reader.offset,
+      size: tableSize
+    });
+    structure.push({
+      name: 'CLUT',
+      value: clutStructure,
+      offset: reader.view.byteOffset + clutOffset,
+      size: reader.offset + tableSize - clutOffset
+    });
+    reader.offset = oldOffset;
+  }
+
+  reader.readStructMember({name: 'A curve', type:'(tag)',    offset:'Offset to A curves', count:outputChannels}, structure);
+
+  return structure;
 }
 
 function readStructureType(structure) {
@@ -345,40 +405,14 @@ let types = {
     }
   },
   'mAB ': {
-    read: readStructureType([
-      {name: 'Type',                      type: 'fourcc'},
-      {name: 'Reserved',                  type: 'uint32'},
-      {name: 'Number of input channels',  type: 'uint8'},
-      {name: 'Number of output channels', type: 'uint8'},
-      {name: 'Reserved',                  type: 'uint16'},
-      {name: 'Offset to B curves',        type: 'uint32'},
-      {name: 'Offset to matrix',          type: 'uint32'},
-      {name: 'Offset to M curves',        type: 'uint32'},
-      {name: 'Offset to CLUT',            type: 'uint32'},
-      {name: 'Offset to A curves',        type: 'uint32'},
-      {name: 'B curve', type:'(tag)',    offset:'Offset to B curves', count:'Number of input channels'},
-      {name: 'Matrix',  type:'(matrix)', offset:'Offset to matrix'},
-      {name: 'M curve', type:'(tag)',    offset:'Offset to M curves', count:3},
-      {name: 'A curve', type:'(tag)',    offset:'Offset to A curves', count:'Number of output channels'},
-    ])
+    read: (reader) => {
+      return readLutType(reader);
+    }
   },
   'mBA ': {
-    read: readStructureType([
-      {name: 'Type',                      type: 'fourcc'},
-      {name: 'Reserved',                  type: 'uint32'},
-      {name: 'Number of input channels',  type: 'uint8'},
-      {name: 'Number of output channels', type: 'uint8'},
-      {name: 'Reserved',                  type: 'uint16'},
-      {name: 'Offset to B curves',        type: 'uint32'},
-      {name: 'Offset to matrix',          type: 'uint32'},
-      {name: 'Offset to M curves',        type: 'uint32'},
-      {name: 'Offset to CLUT',            type: 'uint32'},
-      {name: 'Offset to A curves',        type: 'uint32'},
-      {name: 'B curve', type:'(tag)',    offset:'Offset to B curves', count:'Number of input channels'},
-      {name: 'Matrix',  type:'(matrix)', offset:'Offset to matrix'},
-      {name: 'M curve', type:'(tag)',    offset:'Offset to M curves', count:3},
-      {name: 'A curve', type:'(tag)',    offset:'Offset to A curves', count:'Number of output channels'},
-    ])
+    read: (reader) => {
+      return readLutType(reader);
+    }
   },
   '(tag table entry)': {
     read: (reader) => {
@@ -444,44 +478,75 @@ function loadProfile(buffer) {
   displayResults([{ title: 'Profile', data: profileResults }]);
 }
 
-function displayHex(buffer, fieldHl = null, baseHl = null) {
+function displayHex(buffer, highlights = []) {
   const bytes = new Uint8Array(buffer);
   const getHlClass = (idx) => {
-    if (fieldHl && idx >= fieldHl.offset && idx < fieldHl.offset + fieldHl.size)
-      return 'hl-field';
-    if (baseHl && idx >= baseHl.offset && idx < baseHl.offset + baseHl.size)
-      return 'hl-base';
+    for (let i = 0; i < highlights.length; i++) {
+      const hl = highlights[i];
+      if (idx >= hl.offset && idx < hl.offset + hl.size) {
+        return `hl-${i}`;
+      }
+    }
     return null;
   };
 
   let html = '';
   for (let i = 0; i < bytes.length; i += 16) {
     html += i.toString(16).padStart(8, '0') + ': ';
-    for (let j = 0; j < 16 && i + j < bytes.length; j++) {
+    let hexPart = '';
+    let asciiPart = '';
+    
+    for (let j = 0; j < 16; j++) {
       const idx = i + j;
-      const hex = bytes[idx].toString(16).padStart(2, '0');
-      const cls = getHlClass(idx);
-      
-      if (cls) {
-        const id = (fieldHl && idx === fieldHl.offset) ? ` id="hl-target"` : '';
-        html += `<span class="${cls}"${id}>${hex}</span>`;
-      } else {
-        html += hex;
-      }
-
-      if (j < 15 && i + j + 1 < bytes.length) {
-        const c1 = getHlClass(idx);
-        const c2 = getHlClass(idx + 1);
-        if (c1 && c2) {
-          const c = (c1 === 'hl-field' && c2 === 'hl-field') ?
-                    'hl-field' : 'hl-base';
-          html += `<span class="${c}">,</span>`;
+      if (idx < bytes.length) {
+        const b = bytes[idx];
+        const hex = b.toString(16).padStart(2, '0');
+        const cls = getHlClass(idx);
+        
+        if (cls) {
+          const id = (i === 0 && j === 0 && highlights[0] && idx === highlights[0].offset) || (highlights[0] && idx === highlights[0].offset) ? ` id="hl-target"` : '';
+          hexPart += `<span class="${cls}"${id}>${hex}</span>`;
         } else {
-          html += ',';
+          hexPart += hex;
         }
+
+        let char = String.fromCharCode(b);
+        if (b === 38) char = '&amp;';
+        else if (b === 60) char = '&lt;';
+        else if (b === 62) char = '&gt;';
+        
+        let asciiChar = '';
+        if (b >= 32 && b <= 126) {
+          asciiChar = char;
+        } else {
+          asciiChar = '<span style="color: #ccc;">.</span>';
+        }
+
+        if (cls) {
+          asciiPart += `<span class="${cls}">${asciiChar}</span>`;
+        } else {
+          asciiPart += asciiChar;
+        }
+
+        if (j < 15) {
+          if (idx + 1 < bytes.length) {
+            const c1 = getHlClass(idx);
+            const c2 = getHlClass(idx + 1);
+            if (c1 && c2 && c1 === c2) {
+              hexPart += `<span class="${c1}">,</span>`;
+            } else {
+              hexPart += ',';
+            }
+          } else {
+            hexPart += ' ';
+          }
+        }
+      } else {
+        hexPart += '  ';
+        if (j < 15) hexPart += ' ';
       }
     }
-    html += '\n';
+    html += hexPart + '  ' + asciiPart + '\n';
   }
   const container = document.getElementById('hex-dump');
   container.innerHTML = html;
@@ -494,36 +559,57 @@ function displayResults(sections) {
   const container = document.getElementById('results');
   container.innerHTML = '';
 
-  const createTable = (data, parentBase = null) => {
-    const table = document.createElement('table');
+  const addRows = (table, data, depth = 0, ancestors = []) => {
     for (let res of data) {
       const row = table.insertRow();
       row.className = 'clickable';
-      const currentBase = res.base || parentBase;
+      res.row = row; // Store row reference for highlighting
+      
+      const currentPath = [res, ...ancestors];
       
       row.onclick = (e) => {
         e.stopPropagation();
-        displayHex(profileBuffer, res, currentBase);
+        
+        // Remove existing highlights from all rows across all tables
+        const allRows = container.getElementsByTagName('tr');
+        for (let r of allRows) {
+          for (let i = 0; i < 6; i++) {
+            r.classList.remove(`hl-${i}`);
+          }
+        }
+        
+        // Highlight hex viewer with the hierarchical path
+        displayHex(profileBuffer, currentPath);
+        
+        // Highlight tree rows for the entire path
+        for (let i = 0; i < currentPath.length; i++) {
+          if (currentPath[i].row) {
+            currentPath[i].row.classList.add(`hl-${i}`);
+          }
+        }
       };
 
-      row.insertCell().textContent = res.name;
-      const valCell = row.insertCell();
+      const nameCell = row.insertCell();
+      nameCell.textContent = res.name;
+      nameCell.style.paddingLeft = (depth * 20 + 4) + 'px';
       
+      const valCell = row.insertCell();
       if (Array.isArray(res.value)) {
-        valCell.appendChild(createTable(res.value, currentBase));
-        valCell.style.padding = '0'; // Remove padding for nested tables
+        valCell.textContent = '';
+        addRows(table, res.value, depth + 1, currentPath);
       } else {
         valCell.textContent = res.value;
       }
     }
-    return table;
   };
 
   for (let section of sections) {
     const header = document.createElement('h2');
     header.textContent = section.title;
     container.appendChild(header);
-    container.appendChild(createTable(section.data));
+    const table = document.createElement('table');
+    container.appendChild(table);
+    addRows(table, section.data);
   }
 }
 
