@@ -26,6 +26,10 @@ class Reader {
     this.parentOffset = parentOffset;
   }
 
+  readValue(type) {
+    return types[type].read(this);
+  }
+
   readStructMember(entry, structure) {
     let count = 1;
     if (typeof entry.count === 'string') {
@@ -44,7 +48,7 @@ class Reader {
       const childName = (entry.count === undefined) ?
         entry.name : `${entry.name}[${i}]`;
 
-      let value = typeDef.read(this);
+      let value = this.readValue(entry.type);
       const childSize = this.offset - childOffset;
 
       structure.push({
@@ -59,11 +63,15 @@ class Reader {
   }
 }
 
-function readStructure(reader, structure) {
-  let children = [];
-  for (let entry of structure) {
-    reader.readStructMember(entry, children);
+function readStructureInto(reader, members, structureLayout) {
+  for (let memberLayout of structureLayout) {
+    reader.readStructMember(memberLayout, members);
   }
+}
+
+function readStructure(reader, structureLayout) {
+  let children = [];
+  readStructureInto(reader, children, structureLayout);
   return children;
 }
 
@@ -110,6 +118,13 @@ let types = {
     read: (reader) => {
       const v = (reader.view.getInt32(reader.offset, false) / 65536.0).toFixed(4);
       reader.offset += 4;
+      return v;
+    }
+  },
+  'u8Fixed8Number-but-from-16': {
+    read: (reader) => {
+      const v = (reader.view.getUint16(reader.offset, false) / 256.0).toFixed(4);
+      reader.offset += 2;
       return v;
     }
   },
@@ -191,12 +206,54 @@ let types = {
     ])
   },
   'curv': {
-    read: readStructureType([
-      {name: 'Type', type: 'fourcc'},
-      {name: 'Reserved', type: 'uint32'},
-      // TODO: Add the fixed parts of the curv structure.
-    ])
-    // TODO: Add the dynamic parts (the table or the formula).
+    read: (reader) => {
+      const structure = readStructure(reader, [
+        {name: 'Type', type: 'fourcc'},
+        {name: 'Reserved', type: 'uint32'},
+        {name: 'Count', type: 'uint32'},
+      ]);
+      const count = getStructMember(structure, 'Count').value;
+
+      if (count === 0) {
+        structure.push({ name: 'Function', value: 'Identity', offset: reader.offset, size: 0 });
+      } else if (count === 1) {
+        reader.readStructMember({name: 'Gamma', type: 'u8Fixed8Number-but-from-16'}, structure);
+      } else {
+        const tableStartOffset = reader.offset;
+        const values = [];
+        for (let i = 0; i < count; ++i) {
+          values.push(reader.readValue('uint16'));
+        }
+        const tableEndOffset = reader.offset;
+        const value = '[table]'; // values.join(', ');
+        structure.push({ name: 'Table', value: value, offset: tableStartOffset, size: tableEndOffset - tableStartOffset });
+      }
+      return structure;
+    }
+  },
+  'para': {
+    read: (reader) => {
+      const structure = readStructure(reader, [
+        {name: 'Type', type: 'fourcc'},
+        {name: 'Reserved', type: 'uint32'},
+        {name: 'Function Type', type: 'uint16'},
+        {name: 'Reserved2', type: 'uint16'},
+      ]);
+      const functionType = getStructMember(structure, 'Function Type').value;
+      const paramNames = [
+        ['g'],                              // Type 0
+        ['g', 'a', 'b'],                    // Type 1
+        ['g', 'a', 'b', 'c'],               // Type 2
+        ['g', 'a', 'b', 'c', 'd'],          // Type 3
+        ['g', 'a', 'b', 'c', 'd', 'e', 'f'] // Type 4
+      ];
+      
+      const names = paramNames[functionType] || [];
+      for (const name of names) {
+        reader.readStructMember({name: name, type: 's15Fixed16Number'}, structure);
+      }
+      return structure;
+    }
   },
   'cicp': {
     read: readStructureType([
@@ -263,29 +320,25 @@ let types = {
         {name: 'Offset to CLUT',            type: 'uint32'},
         {name: 'Offset to A curves',        type: 'uint32'},
       ]);
-      const stopOffset = reader.offset;
+      const structStopOffset = reader.offset;
 
-      const aCurveOffset = getStructMember(structure, 'Offset to A curves').value;
-      if (aCurveOffset !== 0) {
-        reader.offset = startOffset + aCurveOffset;
-        let aCurves = readStructure(reader, [
-          {name: 'A curve', type: '(tag)'},
+      const numInputChannels = getStructMember(structure, 'Number of input channels').value;
+      const numOutputChannels = getStructMember(structure, 'Number of output channels').value;
+
+      reader.offset = getStructMember(structure, 'Offset to B curves').value;
+      if (reader.offset !== 0) {
+        readStructureInto(reader, structure, [
+          {name: 'B curve', type: '(tag)', count:numInputChannels },
         ]);
-        structure.push({ name: 'A curves', value: aCurves, offset: 0, size: 0 });
       }
 
-/*
-      const inputChannels = getStructMember(structure, 'Number of input channels').value;
-      const aCurveOffset = getStructMember(structure, 'Offset to A curves').value;
-      if (aCurveOffset !== 0) {
-        const aCurveReader = new Reader(reader.view, startOffset + aCurveOffset);
-        const aCurves = [];
-        for (let i = 0; i < inputChannels; ++i) {
-          aCurveReader.readStructMember({name: `A-curve offset[${i}]`, type: 'uint32'}, aCurves);
-        }
-        structure.push({ name: 'A curves', value: aCurves, offset: startOffset + aCurveOffset, size: aCurveReader.offset - (startOffset + aCurveOffset) });
+      reader.offset = getStructMember(structure, 'Offset to A curves').value;
+      if (reader.offset !== 0) {
+        readStructureInto(reader, structure, [
+          {name: 'A curve', type: '(tag)', count:numInputChannels },
+        ]);
       }
-*/
+
       return structure;
     }
   },
@@ -318,7 +371,7 @@ let types = {
       reader.offset -= 4;
       const typeDef = types[tagSignature];
       if (typeDef && typeDef.read) {
-        return typeDef.read(tagReader);
+        return typeDef.read(reader);
       }
       return [
         { name: 'Unknown tag', value: tagSignature, offset: 0, size: 0 },
