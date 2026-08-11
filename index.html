@@ -293,18 +293,37 @@ let types = {
       {name: 'Video Full Range Flag', type: 'uint8'}
     ])
   },
+  '(matrix)': {
+    read: readStructureType([
+      { name: 'm11', type: 's15Fixed16Number' },
+      { name: 'm12', type: 's15Fixed16Number' },
+      { name: 'm13', type: 's15Fixed16Number' },
+      { name: 'm21', type: 's15Fixed16Number' },
+      { name: 'm22', type: 's15Fixed16Number' },
+      { name: 'm23', type: 's15Fixed16Number' },
+      { name: 'm31', type: 's15Fixed16Number' },
+      { name: 'm32', type: 's15Fixed16Number' },
+      { name: 'm33', type: 's15Fixed16Number' },
+      { name: 'v1',  type: 's15Fixed16Number' },
+      { name: 'v2',  type: 's15Fixed16Number' },
+      { name: 'v3',  type: 's15Fixed16Number' }
+    ])
+  },
+  'wtpt': {
+    read: readStructureType([
+      {name: 'Type', type: 'fourcc'},
+      {name: 'Reserved', type: 'uint32'},
+      {name: 'XYZ', type: 'XYZNumber'}
+    ])
+  },
   'mluc': {
-    read: (reader) => {
-      const startOffset = reader.offset;
-      const structure = readStructure(reader, [
-        {name: 'Type', type: 'fourcc'},
-        {name: 'Reserved', type: 'uint32'},
-        {name: 'Number of records', type: 'uint32'},
-        {name: 'Record size', type: 'uint32'},
-        {name: 'Record', type: '(mluc record)', count: 'Number of records'},
-      ]);
-      return structure;
-    }
+    read: readStructureType([
+      {name: 'Type', type: 'fourcc'},
+      {name: 'Reserved', type: 'uint32'},
+      {name: 'Number of records', type: 'uint32'},
+      {name: 'Record size', type: 'uint32'},
+      {name: 'Record', type: '(mluc record)', count: 'Number of records'},
+    ])
   },
   '(mluc record)': {
     read: (reader) => {
@@ -326,27 +345,40 @@ let types = {
     }
   },
   'mAB ': {
-    read: (reader) => {
-      const startOffset = reader.offset;
-      let structure = readStructure(reader, [
-        {name: 'Type',                      type: 'fourcc'},
-        {name: 'Reserved',                  type: 'uint32'},
-        {name: 'Number of input channels',  type: 'uint8'},
-        {name: 'Number of output channels', type: 'uint8'},
-        {name: 'Reserved',                  type: 'uint16'},
-        {name: 'Offset to B curves',        type: 'uint32'},
-        {name: 'Offset to matrix',          type: 'uint32'},
-        {name: 'Offset to M curves',        type: 'uint32'},
-        {name: 'Offset to CLUT',            type: 'uint32'},
-        {name: 'Offset to A curves',        type: 'uint32'},
-
-        {name: 'B curve', type:'(tag)', offset:'Offset to B curves', count:'Number of input channels'},
-        {name: 'M curve', type:'(tag)', offset:'Offset to M curves', count:'Number of input channels'},
-        {name: 'A curve', type:'(tag)', offset:'Offset to A curves', count:'Number of output channels'},
-      ]);
-
-      return structure;
-    }
+    read: readStructureType([
+      {name: 'Type',                      type: 'fourcc'},
+      {name: 'Reserved',                  type: 'uint32'},
+      {name: 'Number of input channels',  type: 'uint8'},
+      {name: 'Number of output channels', type: 'uint8'},
+      {name: 'Reserved',                  type: 'uint16'},
+      {name: 'Offset to B curves',        type: 'uint32'},
+      {name: 'Offset to matrix',          type: 'uint32'},
+      {name: 'Offset to M curves',        type: 'uint32'},
+      {name: 'Offset to CLUT',            type: 'uint32'},
+      {name: 'Offset to A curves',        type: 'uint32'},
+      {name: 'B curve', type:'(tag)',    offset:'Offset to B curves', count:'Number of input channels'},
+      {name: 'Matrix',  type:'(matrix)', offset:'Offset to matrix'},
+      {name: 'M curve', type:'(tag)',    offset:'Offset to M curves', count:3},
+      {name: 'A curve', type:'(tag)',    offset:'Offset to A curves', count:'Number of output channels'},
+    ])
+  },
+  'mBA ': {
+    read: readStructureType([
+      {name: 'Type',                      type: 'fourcc'},
+      {name: 'Reserved',                  type: 'uint32'},
+      {name: 'Number of input channels',  type: 'uint8'},
+      {name: 'Number of output channels', type: 'uint8'},
+      {name: 'Reserved',                  type: 'uint16'},
+      {name: 'Offset to B curves',        type: 'uint32'},
+      {name: 'Offset to matrix',          type: 'uint32'},
+      {name: 'Offset to M curves',        type: 'uint32'},
+      {name: 'Offset to CLUT',            type: 'uint32'},
+      {name: 'Offset to A curves',        type: 'uint32'},
+      {name: 'B curve', type:'(tag)',    offset:'Offset to B curves', count:'Number of input channels'},
+      {name: 'Matrix',  type:'(matrix)', offset:'Offset to matrix'},
+      {name: 'M curve', type:'(tag)',    offset:'Offset to M curves', count:3},
+      {name: 'A curve', type:'(tag)',    offset:'Offset to A curves', count:'Number of output channels'},
+    ])
   },
   '(tag table entry)': {
     read: (reader) => {
