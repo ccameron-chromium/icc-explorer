@@ -19,6 +19,8 @@
   tr.clickable:hover { background: #eee; }
   td:first-child { font-weight: bold; width: 25%; white-space: nowrap; }
   td:last-child { font-family: monospace; word-break: break-all; }
+  .toggle { cursor: pointer; user-select: none; margin-right: 5px; display: inline-block; width: 10px; text-align: center; }
+  .row-hidden { display: none; }
 </style>
 <script>
 let profileBuffer = null;
@@ -560,28 +562,24 @@ function displayResults(sections) {
   container.innerHTML = '';
 
   const addRows = (table, data, depth = 0, ancestors = []) => {
+    const allDescendantRows = [];
     for (let res of data) {
       const row = table.insertRow();
       row.className = 'clickable';
-      res.row = row; // Store row reference for highlighting
+      res.row = row;
+      allDescendantRows.push(row);
       
       const currentPath = [res, ...ancestors];
       
       row.onclick = (e) => {
         e.stopPropagation();
-        
-        // Remove existing highlights from all rows across all tables
         const allRows = container.getElementsByTagName('tr');
         for (let r of allRows) {
           for (let i = 0; i < 6; i++) {
             r.classList.remove(`hl-${i}`);
           }
         }
-        
-        // Highlight hex viewer with the hierarchical path
         displayHex(profileBuffer, currentPath);
-        
-        // Highlight tree rows for the entire path
         for (let i = 0; i < currentPath.length; i++) {
           if (currentPath[i].row) {
             currentPath[i].row.classList.add(`hl-${i}`);
@@ -590,17 +588,59 @@ function displayResults(sections) {
       };
 
       const nameCell = row.insertCell();
-      nameCell.textContent = res.name;
       nameCell.style.paddingLeft = (depth * 20 + 4) + 'px';
       
+      const nameSpan = document.createElement('span');
+      nameSpan.textContent = res.name;
+
       const valCell = row.insertCell();
       if (Array.isArray(res.value)) {
+        const toggle = document.createElement('span');
+        toggle.className = 'toggle';
+        toggle.textContent = '▼';
+        
+        nameCell.appendChild(toggle);
+        row.childToggle = toggle;
+        
         valCell.textContent = '';
-        addRows(table, res.value, depth + 1, currentPath);
+        const childRows = addRows(table, res.value, depth + 1, currentPath);
+        allDescendantRows.push(...childRows);
+        row.directChildren = childRows.filter(r => r.depth === depth + 1);
+        row.depth = depth;
+
+        toggle.onclick = (e) => {
+          e.stopPropagation();
+          const isCollapsed = toggle.textContent === '▼';
+          toggle.textContent = isCollapsed ? '▶' : '▼';
+          
+          const setVisibility = (r, visible) => {
+            if (visible) {
+              r.classList.remove('row-hidden');
+              if (r.childToggle && r.childToggle.textContent === '▼') {
+                r.directChildren.forEach(c => setVisibility(c, true));
+              }
+            } else {
+              r.classList.add('row-hidden');
+              if (r.directChildren) {
+                r.directChildren.forEach(c => setVisibility(c, false));
+              }
+            }
+          };
+
+          row.directChildren.forEach(c => setVisibility(c, !isCollapsed));
+        };
       } else {
+        const spacer = document.createElement('span');
+        spacer.className = 'toggle';
+        spacer.style.visibility = 'hidden';
+        spacer.textContent = '•';
+        nameCell.appendChild(spacer);
         valCell.textContent = res.value;
+        row.depth = depth;
       }
+      nameCell.appendChild(nameSpan);
     }
+    return allDescendantRows;
   };
 
   for (let section of sections) {
