@@ -41,7 +41,11 @@ class Reader {
     let offsetToRestore = null;
     if (typeof entry.offset === 'string') {
       offsetToRestore = this.offset;
-      this.offset = structure.find(r => r.name === entry.offset).value;
+      const newOffset = structure.find(r => r.name === entry.offset).value;
+      if (newOffset === 0) {
+        return;
+      }
+      this.offset = newOffset;
     }
 
     const typeDef = types[entry.type];
