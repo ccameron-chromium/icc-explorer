@@ -53,17 +53,18 @@ class Reader {
     for (let i = 0; i < limit; ++i) {
       if (count === 0 && this.offset >= this.view.byteLength) break;
 
-      const childOffset = this.offset;
+      const childOffsetStart = this.view.byteOffset + this.offset;
       const childName = (entry.count === undefined) ?
         entry.name : `${entry.name}[${i}]`;
 
       let value = this.readValue(entry.type);
-      const childSize = this.offset - childOffset;
+      const childOffsetEnd = this.view.byteOffset + this.offset;
+      const childSize = childOffsetEnd - childOffsetStart;
 
       structure.push({
         name: childName,
         value: value,
-        offset: childOffset,
+        offset: childOffsetStart,
         size: childSize
       });
 
@@ -74,17 +75,6 @@ class Reader {
       this.offset = offsetToRestore;
     }
   }
-}
-
-function readMemberAtOffsetInto(reader, structure, name, offsetMember, count) {
-  const startOffset = reader.offset;
-  reader.offset = getStructMember(structure, offsetMember).value;
-  if (reader.offset !== 0) {
-    readStructureInto(reader, structure, [
-      {name: name, type: '(tag)', count:count },
-    ]);
-  }
-  reader.offset = startOffset;
 }
 
 function readStructureInto(reader, members, structureLayout) {
