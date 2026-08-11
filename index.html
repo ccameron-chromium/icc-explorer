@@ -1,30 +1,13 @@
+<!DOCTYPE html>
 <html>
 <head>
+<meta charset="utf-8">
 <style>
-  body { font-family: sans-serif; }
-  #main { display: flex; gap: 20px; }
-  #hex-dump {
-    flex: 0 0 auto;
-    width: 58ch;
-    font-family: monospace;
-    white-space: pre;
-    border: 1px solid #ccc;
-    padding: 10px;
-    height: 80vh;
-    overflow-y: auto;
-    background: #f9f9f9;
-  }
-  .hl-base { background: #c8e6c9; }
-  .hl-field { background: #ffeb3b; font-weight: bold; }
-  #results {
-    flex: 1;
-    min-width: 0;
-    height: 80vh;
-    overflow-y: auto;
-    border: 1px solid #ccc;
-    padding: 10px;
-  }
-  h2:first-child { margin-top: 0; }
+  body { font-family: sans-serif; display: flex; height: 100vh; margin: 0; }
+  #hex-dump { flex: 1; overflow-y: scroll; font-family: monospace; white-space: pre; padding: 10px; background: #f0f0f0; }
+  #results { flex: 1; overflow-y: scroll; padding: 10px; }
+  .hl-field { background: yellow; }
+  .hl-base { background: #e0e0ff; }
   table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
   th, td { border: 1px solid #ccc; padding: 4px; text-align: left; }
   table table { margin-bottom: 0; }
@@ -36,9 +19,57 @@
 <script>
 let profileBuffer = null;
 
+class Reader {
+  constructor(view, offset = 0, parentOffset = 0) {
+    this.view = view;
+    this.offset = offset;
+    this.parentOffset = parentOffset;
+  }
+
+  readStructMember(entry, structure) {
+    let count = 1;
+    if (typeof entry.count === 'string') {
+      const prev = structure.find(r => r.name === entry.count);
+      count = prev ? prev.value : 0;
+    } else if (entry.count !== undefined) {
+      count = entry.count;
+    }
+
+    const typeDef = types[entry.type];
+    const limit = (count === 0) ? Infinity : count;
+    for (let i = 0; i < limit; ++i) {
+      if (count === 0 && this.offset >= this.view.byteLength) break;
+
+      const childOffset = this.offset;
+      const childName = (entry.count === undefined) ?
+        entry.name : `${entry.name}[${i}]`;
+
+      let value = typeDef.read(this);
+      const childSize = this.offset - childOffset;
+
+      structure.push({
+        name: childName,
+        value: value,
+        offset: childOffset,
+        size: childSize
+      });
+
+      if (childSize === 0 && limit === Infinity) break;
+    }
+  }
+}
+
+function readStructure(reader, structure) {
+  let children = [];
+  for (let entry of structure) {
+    reader.readStructMember(entry, children);
+  }
+  return children;
+}
+
 function readStructureType(structure) {
-  return (view, offset) => {
-    return readStructure(view, structure, offset);
+  return (reader) => {
+    return readStructure(reader, structure);
   };
 }
 
@@ -47,59 +78,77 @@ let types = {
   // Leaf node types.
   
   'uint8': {
-    read: (view, offset) => ({ value: view.getUint8(offset), size: 1 })
+    read: (reader) => {
+      const v = reader.view.getUint8(reader.offset);
+      reader.offset += 1;
+      return v;
+    }
   },
   'twocc': {
-    read: (view, offset) => ({
-      value: String.fromCharCode(view.getUint8(offset),
-                                 view.getUint8(offset + 1)),
-      size: 2
-    })
+    read: (reader) => {
+      const v = String.fromCharCode(reader.view.getUint8(reader.offset),
+                                     reader.view.getUint8(reader.offset + 1));
+      reader.offset += 2;
+      return v;
+    }
   },
   'uint16': {
-    read: (view, offset) => ({ value: view.getUint16(offset, false), size: 2 })
+    read: (reader) => {
+      const v = reader.view.getUint16(reader.offset, false);
+      reader.offset += 2;
+      return v;
+    }
   },
   'uint32': {
-    read: (view, offset) => ({ value: view.getUint32(offset, false), size: 4 })
+    read: (reader) => {
+      const v = reader.view.getUint32(reader.offset, false);
+      reader.offset += 4;
+      return v;
+    }
   },
   's15Fixed16Number': {
-    read: (view, offset) => ({ 
-      value: (view.getInt32(offset, false) / 65536.0).toFixed(4), 
-      size: 4 
-    })
+    read: (reader) => {
+      const v = (reader.view.getInt32(reader.offset, false) / 65536.0).toFixed(4);
+      reader.offset += 4;
+      return v;
+    }
   },
   'bitfield32': {
-    read: (view, offset) => ({
-      value: '0x' + view.getUint32(offset, false).toString(16).padStart(8, '0'),
-      size: 4
-    })
+    read: (reader) => {
+      const v = '0x' + reader.view.getUint32(reader.offset, false).toString(16).padStart(8, '0');
+      reader.offset += 4;
+      return v;
+    }
   },
   'bitfield64': {
-    read: (view, offset) => ({
-      value: '0x' + view.getUint32(offset, false).toString(16).padStart(8, '0') +
-             view.getUint32(offset+4, false).toString(16).padStart(8, '0'),
-      size: 8
-    })
+    read: (reader) => {
+      const v = '0x' + reader.view.getUint32(reader.offset, false).toString(16).padStart(8, '0') +
+             reader.view.getUint32(reader.offset + 4, false).toString(16).padStart(8, '0');
+      reader.offset += 8;
+      return v;
+    }
   },
   'fourcc': {
-    read: (view, offset) => {
+    read: (reader) => {
       let s = '';
       for (let i = 0; i < 4; ++i) {
-        let c = view.getUint8(offset + i);
+        let c = reader.view.getUint8(reader.offset + i);
         s += c >= 32 && c <= 126 ?
           String.fromCharCode(c) :
           '\\x' + c.toString(16).padStart(2, '0');
       }
-      return { value: s, size: 4 };
+      reader.offset += 4;
+      return s;
     }
   },
   'md5': {
-    read: (view, offset) => {
+    read: (reader) => {
       let s = '';
       for (let i = 0; i < 16; ++i) {
-        s += view.getUint8(offset + i).toString(16).padStart(2, '0');
+        s += reader.view.getUint8(reader.offset + i).toString(16).padStart(2, '0');
       }
-      return { value: s, size: 16 };
+      reader.offset += 16;
+      return s;
     }
   },
 
@@ -123,6 +172,10 @@ let types = {
       { name: 'Z', type: 's15Fixed16Number' }
     ])
   },
+
+  ////////////////////////////////////////////////////////////////////////////////
+  // Tag types
+
   'XYZ ': {
     read: readStructureType([
       {name: 'Type', type: 'fourcc'},
@@ -137,6 +190,14 @@ let types = {
       {name: 'ASCII', type: 'uint8', count: 0}
     ])
   },
+  'curv': {
+    read: readStructureType([
+      {name: 'Type', type: 'fourcc'},
+      {name: 'Reserved', type: 'uint32'},
+      // TODO: Add the fixed parts of the curv structure.
+    ])
+    // TODO: Add the dynamic parts (the table or the formula).
+  },
   'cicp': {
     read: readStructureType([
       {name: 'Type', type: 'fourcc'},
@@ -148,59 +209,121 @@ let types = {
     ])
   },
   'mluc': {
-    read: readStructureType([
-      {name: 'Type', type: 'fourcc'},
-      {name: 'Reserved', type: 'uint32'},
-      {name: 'Number of records', type: 'uint32'},
-      {name: 'Record size', type: 'uint32'},
-      {name: 'Records', type: '(mluc record)', count: 'Number of records'},
-    ])
+    read: (reader) => {
+      const startOffset = reader.offset;
+      const structure = readStructure(reader, [
+        {name: 'Type', type: 'fourcc'},
+        {name: 'Reserved', type: 'uint32'},
+        {name: 'Number of records', type: 'uint32'},
+        {name: 'Record size', type: 'uint32'},
+      ]);
+      const numRecords = getStructMember(structure, 'Number of records').value;
+      const recordReader = new Reader(reader.view, reader.offset, startOffset);
+      const records = [];
+      for (let i = 0; i < numRecords; ++i) {
+        recordReader.readStructMember({name: `Record[${i}]`, type: '(mluc record)'}, records);
+      }
+      reader.offset = recordReader.offset;
+      structure.push({ name: 'Records', value: records, offset: startOffset + 16, size: reader.offset - (startOffset + 16) });
+      return structure;
+    }
   },
   '(mluc record)': {
-    read: readStructureType([
-      {name: 'language code', type: 'twocc'},
-      {name: 'country code', type: 'twocc'},
-      {name: 'length', type: 'uint32'},
-      {name: 'offset', type: 'uint32'},
-    ]),
-    onReadStructure: (view, structure, offset) => {
-      const length = getStructureValue(structure, 'length');
-      const dataOffset = getStructureValue(structure, 'offset');
-
+    read: (reader) => {
+      let structure = readStructure(reader, [
+        {name: 'language code', type: 'twocc'},
+        {name: 'country code', type: 'twocc'},
+        {name: 'length', type: 'uint32'},
+        {name: 'offset', type: 'uint32'},
+      ]);
+/*
+      const length = getStructMember(structure, 'length').value;
+      const dataOffset = getStructMember(structure, 'offset').value;
       let value = '';
       for (let i = 0; i < length; i += 2) {
-        value += String.fromCharCode(view.getUint16(offset + dataOffset + i, false));
+        value += String.fromCharCode(reader.view.getUint16(reader.parentOffset + dataOffset + i, false));
       }
-
-      return [{ name: 'Value', value: value, offset: offset + dataOffset, size: length }];
+      structure.push({ name: 'Value', value: value, offset: reader.parentOffset + dataOffset, size: length });
+*/
+      return structure;
     }
   },
   'mAB ': {
-    read: readStructureType([
-      {name: 'Type',                      type: 'fourcc'},
-      {name: 'Reserved',                  type: 'uint32'},
-      {name: 'Number of input channels',  type: 'uint8'},
-      {name: 'Number of output channels', type: 'uint8'},
-      {name: 'Reserved',                  type: 'uint16'},
-      {name: 'Offset to B curves',        type: 'uint32'},
-      {name: 'Offset to matrix',          type: 'uint32'},
-      {name: 'Offset to M curves',        type: 'uint32'},
-      {name: 'Offset to CLUT',            type: 'uint32'},
-      {name: 'Offset to A curves',        type: 'uint32'},
-    ])
-  },
-  'tagTable': {
-    read: readStructureType([
-      {name: 'signature', type: 'fourcc'},
-      {name: 'offset', type: 'uint32'},
-      {name: 'size', type: 'uint32'},
-    ]),
-    onReadStructure: (view, structure, offset) => {
-      const tagOffset = getStructureValue(structure, 'offset');
-      const size = getStructureValue(structure, 'size');
-      const subValues = readTag(view, tagOffset, size);
+    read: (reader) => {
+      const startOffset = reader.offset;
+      let structure = readStructure(reader, [
+        {name: 'Type',                      type: 'fourcc'},
+        {name: 'Reserved',                  type: 'uint32'},
+        {name: 'Number of input channels',  type: 'uint8'},
+        {name: 'Number of output channels', type: 'uint8'},
+        {name: 'Reserved',                  type: 'uint16'},
+        {name: 'Offset to B curves',        type: 'uint32'},
+        {name: 'Offset to matrix',          type: 'uint32'},
+        {name: 'Offset to M curves',        type: 'uint32'},
+        {name: 'Offset to CLUT',            type: 'uint32'},
+        {name: 'Offset to A curves',        type: 'uint32'},
+      ]);
+      const stopOffset = reader.offset;
 
-      return [{ name:'Tag data', value:subValues, offset:0, size:0 }];
+      const aCurveOffset = getStructMember(structure, 'Offset to A curves').value;
+      if (aCurveOffset !== 0) {
+        reader.offset = startOffset + aCurveOffset;
+        let aCurves = readStructure(reader, [
+          {name: 'A curve', type: '(tag)'},
+        ]);
+        structure.push({ name: 'A curves', value: aCurves, offset: 0, size: 0 });
+      }
+
+/*
+      const inputChannels = getStructMember(structure, 'Number of input channels').value;
+      const aCurveOffset = getStructMember(structure, 'Offset to A curves').value;
+      if (aCurveOffset !== 0) {
+        const aCurveReader = new Reader(reader.view, startOffset + aCurveOffset);
+        const aCurves = [];
+        for (let i = 0; i < inputChannels; ++i) {
+          aCurveReader.readStructMember({name: `A-curve offset[${i}]`, type: 'uint32'}, aCurves);
+        }
+        structure.push({ name: 'A curves', value: aCurves, offset: startOffset + aCurveOffset, size: aCurveReader.offset - (startOffset + aCurveOffset) });
+      }
+*/
+      return structure;
+    }
+  },
+  '(tag table entry)': {
+    read: (reader) => {
+      let structure = readStructure(reader, [
+        {name: 'signature', type: 'fourcc'},
+        {name: 'offset', type: 'uint32'},
+        {name: 'size', type: 'uint32'},
+      ]);
+
+      const tagOffset = getStructMember(structure, 'offset').value;
+      const tagSize = getStructMember(structure, 'size').value;
+
+      const subView = new DataView(reader.view.buffer, reader.view.byteOffset + tagOffset, tagSize);
+      const tagReader = new Reader(subView, 0);
+      const tagSignature = types['fourcc'].read(tagReader);
+      tagReader.offset -= 4;
+      const typeDef = types[tagSignature];
+      if (typeDef && typeDef.read) {
+        tagData = typeDef.read(tagReader);
+        structure.push({ name: 'Tag data', value: tagData, offset: tagOffset, size: tagSize });
+      }
+      return structure;
+    }
+  },
+  '(tag)': {
+    read: (reader) => {
+      const tagSignature = types['fourcc'].read(reader);
+      reader.offset -= 4;
+      const typeDef = types[tagSignature];
+      if (typeDef && typeDef.read) {
+        return typeDef.read(tagReader);
+      }
+      return [
+        { name: 'Unknown tag', value: tagSignature, offset: 0, size: 0 },
+        { name: 'Data', value: `[bytes]`, offset: 0, size: 0 }
+      ];
     }
   }
 };
@@ -225,81 +348,19 @@ let headerStructure = [
   {name: 'Profile ID', type: 'md5'},
   {name: 'Reserved', type: 'uint32', count: 7},
   {name: 'Tag count', type: 'uint32'},
-  {name: 'Tags', type: 'tagTable', count: 'Tag count'}
+  {name: 'Tags', type: '(tag table entry)', count: 'Tag count'}
 ];
 
-function getStructureValue(structure, name) {
-  const item = structure.find(r => r.name === name);
-  return item ? item.value : undefined;
-}
-
-// Returns a node in an ICC profile parsed tree. The node corresponds to
-// the structure indicated by `structure`
-function readStructure(view, structure, startOffset) {
-  let offset = startOffset;
-  let children = [];
-  for (let entry of structure) {
-    let count = 1;
-    if (typeof entry.count === 'string') {
-      const prev = children.find(r => r.name === entry.count);
-      count = prev ? prev.value : 0;
-    } else if (entry.count !== undefined) {
-      count = entry.count;
-    }
-
-    const typeDef = types[entry.type];
-    let parsedItems = [];
-    
-    const limit = (count === 0) ? Infinity : count;
-    for (let i = 0; i < limit; ++i) {
-      if (count === 0 && offset >= view.byteLength) break;
-      
-      const childOffset = offset;
-      const childName = (entry.count === undefined) ? 
-        entry.name : `${entry.name}[${i}]`;
-
-      // Read the value and size.
-      const { value: structure, size: childSize } = typeDef.read(view, offset);
-      offset += childSize;
-
-      if (typeDef.onReadStructure !== undefined) {
-        const subItems = typeDef.onReadStructure(view, structure, startOffset);
-        for (let j = 0; j < subItems.length; ++j) {
-          structure.push(subItems[j]);
-        }
-      }
-
-      children.push({
-        name: childName,
-        value: structure,
-        offset: childOffset,
-        size: childSize
-      });
-    }
-  }
-  return { value: children, size: offset - startOffset };
-}
-
-function readTag(view, offset, size) {
-  const subView = new DataView(view.buffer, view.byteOffset + offset, size);
-  const typeSig = types['fourcc'].read(subView, 0).value;
-
-  const typeDef = types[typeSig];
-  if (typeDef && typeDef.read) {
-    return typeDef.read(subView, 0).value;
-  }
-  return [
-    { name: 'Type', value: typeSig, offset: 0, size: 4 },
-    { name: 'Data', value: `[${size} bytes]`, offset: 4, size: size - 4 }
-  ];
+function getStructMember(structure, name) {
+  return structure.find(r => r.name === name);
 }
 
 function loadProfile(buffer) {
   profileBuffer = buffer;
   displayHex(buffer);
-  const view = new DataView(buffer);
-  
-  let { value : profileResults } = readStructure(view, headerStructure, 0);
+
+  const reader = new Reader(new DataView(buffer), 0);
+  let profileResults = readStructure(reader, headerStructure);
 
   displayResults([{ title: 'Profile', data: profileResults }]);
 }
@@ -380,41 +441,30 @@ function displayResults(sections) {
   };
 
   for (let section of sections) {
-    const h2 = document.createElement('h2');
-    h2.textContent = section.title;
-    container.appendChild(h2);
-    container.appendChild(createTable(section.data, section.base));
+    const header = document.createElement('h2');
+    header.textContent = section.title;
+    container.appendChild(header);
+    container.appendChild(createTable(section.data));
   }
 }
 
-window.onload = () => {
-  const button = document.getElementById('LoadProfile');
-  const input = document.createElement('input');
-  input.type = 'file';
-  input.onchange = (e) => {
-    const file = e.target.files[0];
-    if (file) file.arrayBuffer().then(loadProfile);
+document.addEventListener('dragover', (e) => {
+  e.preventDefault();
+});
+
+document.addEventListener('drop', (e) => {
+  e.preventDefault();
+  const file = e.dataTransfer.files[0];
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    loadProfile(e.target.result);
   };
-  button.onclick = () => input.click();
-  button.ondragover = (e) => {
-    e.preventDefault();
-    button.style.background = '#eee';
-  };
-  button.ondragleave = () => button.style.background = '';
-  button.ondrop = (e) => {
-    e.preventDefault();
-    button.style.background = '';
-    const file = e.dataTransfer.files[0];
-    if (file) file.arrayBuffer().then(loadProfile);
-  };
-};
+  reader.readAsArrayBuffer(file);
+});
 </script>
 </head>
 <body>
-<p><button id="LoadProfile">Load Profile</button></p>
-<div id="main">
-  <div id="hex-dump">Hex dump will appear here...</div>
+  <div id="hex-dump">Drop an ICC profile here</div>
   <div id="results"></div>
-</div>
 </body>
 </html>
