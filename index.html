@@ -163,7 +163,6 @@ function readLutType(reader) {
     });
     reader.offset = oldOffset;
   }
-
   reader.readStructMember({name: 'A curve', type:'(tag)',    offset:'Offset to A curves', count:outputChannels}, structure);
 
   return structure;
@@ -237,20 +236,20 @@ let tagTypes = {
       const structure = readStructure(reader, [
         {name: 'Type', type: 'fourcc'},
         {name: 'Reserved', type: 'uint32'},
+        {name: 'Payload bytes minus one', type: 'uint32'},
       ]);
       const startOffset = reader.getBufferOffset();
-      const byteLength = reader.view.byteLength - reader.offset;
-      const hexValues = [];
+      const byteLength = getStructMember(structure, 'Payload bytes minus one').value + 1;
+      const values = [];
       for (let i = 0; i < byteLength; ++i) {
-        hexValues.push('0x' + reader.view.getUint8(reader.offset + i).toString(16).padStart(2, '0'));
+        values.push('0x' + reader.readValue('uint8').toString(16).padStart(2, '0'));
       }
       structure.push({
-        name: 'Data',
-        value: hexValues.join(','),
+        name: 'SMPTE ST 2094-50 Payload',
+        value: values.join(','),
         offset: startOffset,
         size: byteLength
       });
-      reader.offset += byteLength;
       return structure;
     }
   },
@@ -338,26 +337,6 @@ let tagTypes = {
   'mBA ': {
     read: (reader) => {
       return readLutType(reader);
-    }
-  },
-  'hagc': {
-    read: (reader) => {
-      const structure = readStructure(reader, [
-        {name: 'Type', type: 'fourcc'},
-        {name: 'Reserved', type: 'uint32'},
-        {name: 'Number of bytes', type: 'uint32'},
-      ]);
-
-      const count = getStructMember(structure, 'Number of bytes').value;
-      const bytesStartOffset = reader.getBufferOffset();
-      const values = [];
-      for (let i = 0; i < count; ++i) {
-        values.push(reader.readValue('uint8'));
-      }
-      const bytesEndOffset = reader.getBufferOffset();
-      const value = '[bytes]'; // values.join(', ');
-      structure.push({ name: 'Bytes', value: value, offset: bytesStartOffset, size: bytesEndOffset - bytesStartOffset });
-      return structure;
     }
   },
 };
@@ -686,7 +665,10 @@ function displayResults(sections) {
       if (Array.isArray(res.value)) {
         const toggle = document.createElement('span');
         toggle.className = 'toggle';
-        toggle.textContent = '▼';
+        
+        // Default to expanded for first two levels (depth 0 and 1), collapsed otherwise
+        const initiallyExpanded = depth < 2;
+        toggle.textContent = initiallyExpanded ? '▼' : '▶';
         
         nameCell.appendChild(toggle);
         row.childToggle = toggle;
@@ -696,6 +678,10 @@ function displayResults(sections) {
         allDescendantRows.push(...childRows);
         row.directChildren = childRows.filter(r => r.depth === depth + 1);
         row.depth = depth;
+
+        if (!initiallyExpanded) {
+           childRows.forEach(r => r.classList.add('row-hidden'));
+        }
 
         toggle.onclick = (e) => {
           e.stopPropagation();
