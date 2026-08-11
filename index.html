@@ -20,10 +20,9 @@
 let profileBuffer = null;
 
 class Reader {
-  constructor(view, offset = 0, parentOffset = 0) {
+  constructor(view, offset = 0) {
     this.view = view;
     this.offset = offset;
-    this.parentOffset = parentOffset;
   }
 
   readValue(type) {
@@ -273,15 +272,8 @@ let types = {
         {name: 'Reserved', type: 'uint32'},
         {name: 'Number of records', type: 'uint32'},
         {name: 'Record size', type: 'uint32'},
+        {name: 'Record', type: '(mluc record)', count: 'Number of records'},
       ]);
-      const numRecords = getStructMember(structure, 'Number of records').value;
-      const recordReader = new Reader(reader.view, reader.offset, startOffset);
-      const records = [];
-      for (let i = 0; i < numRecords; ++i) {
-        recordReader.readStructMember({name: `Record[${i}]`, type: '(mluc record)'}, records);
-      }
-      reader.offset = recordReader.offset;
-      structure.push({ name: 'Records', value: records, offset: startOffset + 16, size: reader.offset - (startOffset + 16) });
       return structure;
     }
   },
@@ -293,15 +285,14 @@ let types = {
         {name: 'length', type: 'uint32'},
         {name: 'offset', type: 'uint32'},
       ]);
-/*
+
       const length = getStructMember(structure, 'length').value;
       const dataOffset = getStructMember(structure, 'offset').value;
       let value = '';
       for (let i = 0; i < length; i += 2) {
-        value += String.fromCharCode(reader.view.getUint16(reader.parentOffset + dataOffset + i, false));
+        value += String.fromCharCode(reader.view.getUint16(dataOffset + i, false));
       }
-      structure.push({ name: 'Value', value: value, offset: reader.parentOffset + dataOffset, size: length });
-*/
+      structure.push({ name: 'Value', value: value, offset: reader.view.byteOffset + dataOffset, size: length });
       return structure;
     }
   },
