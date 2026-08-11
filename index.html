@@ -38,6 +38,12 @@ class Reader {
       count = entry.count;
     }
 
+    let offsetToRestore = null;
+    if (typeof entry.offset === 'string') {
+      offsetToRestore = this.offset;
+      this.offset = structure.find(r => r.name === entry.offset).value;
+    }
+
     const typeDef = types[entry.type];
     const limit = (count === 0) ? Infinity : count;
     for (let i = 0; i < limit; ++i) {
@@ -59,7 +65,22 @@ class Reader {
 
       if (childSize === 0 && limit === Infinity) break;
     }
+
+    if (offsetToRestore !== null) {
+      this.offset = offsetToRestore;
+    }
   }
+}
+
+function readMemberAtOffsetInto(reader, structure, name, offsetMember, count) {
+  const startOffset = reader.offset;
+  reader.offset = getStructMember(structure, offsetMember).value;
+  if (reader.offset !== 0) {
+    readStructureInto(reader, structure, [
+      {name: name, type: '(tag)', count:count },
+    ]);
+  }
+  reader.offset = startOffset;
 }
 
 function readStructureInto(reader, members, structureLayout) {
@@ -310,25 +331,11 @@ let types = {
         {name: 'Offset to M curves',        type: 'uint32'},
         {name: 'Offset to CLUT',            type: 'uint32'},
         {name: 'Offset to A curves',        type: 'uint32'},
+
+        {name: 'B curve', type:'(tag)', offset:'Offset to B curves', count:'Number of input channels'},
+        {name: 'M curve', type:'(tag)', offset:'Offset to M curves', count:'Number of input channels'},
+        {name: 'A curve', type:'(tag)', offset:'Offset to A curves', count:'Number of output channels'},
       ]);
-      const structStopOffset = reader.offset;
-
-      const numInputChannels = getStructMember(structure, 'Number of input channels').value;
-      const numOutputChannels = getStructMember(structure, 'Number of output channels').value;
-
-      reader.offset = getStructMember(structure, 'Offset to B curves').value;
-      if (reader.offset !== 0) {
-        readStructureInto(reader, structure, [
-          {name: 'B curve', type: '(tag)', count:numInputChannels },
-        ]);
-      }
-
-      reader.offset = getStructMember(structure, 'Offset to A curves').value;
-      if (reader.offset !== 0) {
-        readStructureInto(reader, structure, [
-          {name: 'A curve', type: '(tag)', count:numInputChannels },
-        ]);
-      }
 
       return structure;
     }
